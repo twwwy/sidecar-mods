@@ -748,6 +748,10 @@ static int32_t mr_tick(void) {   /* 1: nothing left to send */
  *                                            words 0..7), P9..P16 the SMPL page (kit words 8..15), 0021's order; hi =
  *                                            the value 0..127, lo = the top 7 bits of its fraction (as 0021's 03 / 04);
  *                                            all 16 after each 29 1, then each tick the changed span (n 1: one knob)
+ * um-draw (plugin-drawn screens, the Sidecar's docs/um-pages.md): the 29's track byte carries the page, t | (page - 1) << 4:
+ * 1 the SRC page (the plain byte above), 2 the stock SMPL page, 3 / 4 a U slot's SRC / SMPL page 2 (0029's P17..P32, as
+ * 0021's um_box says); a page change sends the old view's off first (an older host drops a paged 29: its SRC view ends).
+ * The frame shows on every page as on the SRC view; 2A as above on all four (P9..P16 the SMPL page's own on a U slot).
  * The frame shows only once the host committed a frame (39) since the view's 29 1 (or since the TRK + YES page or a
  * 3A x 0 gave the screen back), while host messages keep coming (1 s timeout), and while nothing covers the page
  * (another view stacked on the list - the machine list, a popup, TRK held - or the pattern selection): then stock's
@@ -784,8 +788,11 @@ typedef int32_t (*pv_get_fn)(void *view, int32_t id, int32_t lock);
 #define KWORD(t, w)  ((const volatile uint8_t *)(0x41255933u + 2531u * (ACTIVE_KIT & 127u) + 152u * (uint32_t)(t) + 2u * (uint32_t)(w)))
 static struct {
   uint8_t on, track, mach, covered;    /* the view (logically: the SRC page of a Sidecar track), its track and machine */
-  uint8_t pend29, p_track, p_on, vals_all;   /* a 29 owed (the newest replaces an unsent one); all 16 values owed */
-  uint8_t show, was_show, pad0, pad;   /* the host's frame on the glass now / at the last tick */
+  uint8_t pend29, p_track, p_on, vals_all;   /* a 29 owed: bit 0 p_track / p_on (the newest replaces an unsent one), bit 1
+                                          poff's off first (um-draw); all 16 values owed */
+  uint8_t show, was_show, pg, poff;    /* the host's frame on the glass now / at the last tick; um-draw: the view's
+                                          (page - 1) << 4 (0 SRC, 0x10 SMPL, 0x20 SRC page 2, 0x30 SMPL page 2), the track
+                                          byte of the view to end */
   uint32_t base, idle, rx_seen;        /* commits at the view's start (or the last give-back); ticks without a message */
   uint16_t val[16];                    /* the values the host was last told */
   uint32_t starts, ends, s29, s2a, shows, covers;   /* diagnostics */
@@ -800,7 +807,8 @@ static struct {
   uint32_t s2al;                       /* 1027e: 2As of a held step's values */
 } sv __attribute__((section(".bss"), aligned(4)));
 
-/* 0 not the SRC page, 1 the SRC page is the screen, 2 the SRC page is there but covered */
+/* 0 not the SRC page, 1 the SRC page is the screen, 2 the SRC page is there but covered; um-draw: | 4 the SMPL page
+   (sv.view its SamplePageView) */
 /* 1027d: a view stacked after SamplerLedView covers the page when it is one of the stock covers measured or found by
    class name (vtables by their typeinfo in the stock image [code]), or, any other class, for its first UNKNOWN_TICKS
    (3 s): a transient popup of an unlisted class still shows, and a view that stays on top without drawing (hardware
@@ -877,7 +885,7 @@ static int32_t up_cursor(uint32_t vt) { return overlay(vt) || (int32_t)ov_list; 
 static int32_t sv_page(void *ctrl) {
   const uint8_t *c = (const uint8_t *)ctrl;
   const uint32_t *n = *(const uint32_t *const *)(c + 28);
-  const uint32_t *top = 0;
+  const uint32_t *top = 0, *smp = 0;
   uint32_t last = 0;
   int32_t k, j, found = 0, cov = 0, after = 0, unknown = 0;
   sv.view = 0;
@@ -891,7 +899,7 @@ static int32_t sv_page(void *ctrl) {
     last = v[0];
     top = v;
     if (last == VT_SYNTHPAGE) { found = 1; sv.view = (void *)v; }
-    if (last == VT_SAMPLEPAGE) found |= 2;   /* 1045: the SMPL page */
+    if (last == VT_SAMPLEPAGE) { found |= 2; smp = v; }   /* 1045: the SMPL page; um-draw: a view too (page 2) */
     if (last == VT_PATSEL && ((const uint8_t *)v)[0x7f]) cov = 1;   /* a BANK key held (not +0x84: above) */
     if (after) {
       for (j = 0; j < (int32_t)(sizeof sv_covers / 4) && sv_covers[j] != last; ++j) ;
@@ -906,19 +914,20 @@ static int32_t sv_page(void *ctrl) {
   if (!found || k == 16 || !n) { sv.view = 0; return 0; }
   if (!after) cov = 1;                 /* SamplerLedView gone: not the plain SRC screen */
   if (unknown && last != VT_SAMPLELED && sv.top_age < UNKNOWN_TICKS) cov = 1;
-  if (!(found & 1)) { sv.view = 0; return 0; }   /* the SMPL page, not the view */
+  if (!(found & 1)) { sv.view = (void *)smp; return cov ? 6 : 5; }   /* um-draw: the SMPL page, a view too (page 2) */
   return cov ? 2 : 1;
 }
 
 static uint16_t sv_word(int32_t t, int32_t i, int32_t lock) {
   const volatile uint8_t *w = KWORD(t, i);   /* P1..P16 contiguous: 0021's knob word 9 + i at sound + 18 + 2 i */
-  int32_t knob = i;
+  int32_t knob = sv.pg == 0x10 ? i - 8 : i;   /* um-draw: on the SMPL page (a U slot's) knob k is P9 + k */
   if (MACHINE_OF(t) == SA_M && i < 8) return 0;   /* 0.5.0: SAMPLER has no P1..P8: 0 in the 2A, as in its 03 / 04 */
-  if (MACHINE_OF(t) == DSPS_M) knob = i == DSPS_P ? 0 : i == 0 ? 8 : i;   /* 7h: knob A is SMP (P11); ENG (P1) on the SMPL page */
+  if (sv.pg) ;
+  else if (MACHINE_OF(t) == DSPS_M) knob = i == DSPS_P ? 0 : i == 0 ? 8 : i;   /* 7h: knob A is SMP (P11); ENG (P1) on the SMPL page */
   else if (MACHINE_OF(t) == SA_M) knob = i == DSPS_P ? 0 : i == 12 ? 1 : i == 13 ? 2 : i == 11 ? 3 : i == 8 ? 4 : i == 9 ? 5 : i > 13 ? i - 8 : 8;
                                     /* 0.5.0: SAMPLER's SRC page (registry's row): SMP STRT END PLAY / TUNE FINE LOOP LEV =
                                        P11 P13 P14 P12 / P9 P10 P15 P16; P1..P8 none. The P is the word (17..24), not the knob */
-  if (knob < 8 && sv.view) {           /* the page's own value (8.8, as the kit word) */
+  if ((uint32_t)knob < 8 && sv.view) {   /* the page's own value (8.8, as the kit word) */
     const uint32_t *vt = *(const uint32_t *const *)sv.view;
     int32_t id = ((pv_id_fn)vt[0x9c / 4])(sv.view, knob);
     if (id > 0) {
@@ -948,25 +957,44 @@ static uint16_t sv_word(int32_t t, int32_t i, int32_t lock) {
   return (uint16_t)((w[0] & 0x7f) << 7 | (w[1] >> 1));
 }
 
+/* um-draw (plugin-drawn screens, the Sidecar's docs/um-pages.md): page w (0 SRC, 1 SMPL) of the selected track's U slot
+   shows its page 2 (0029's P17..P32), by 0021's um_box (its page(w, 0): 0x10 | the page shown; ext_steps(UM_Q) gives
+   the box, as 0029 asks; an older 0021 has none: page 1) */
+#define UM_Q 0x554d5047
+static uint32_t sv_umb;                /* 0021's um_box, 1 asked and none */
+static int32_t sv_paged(int32_t w) {
+  if (!sv_umb && XBOX[0] == 0x58535450u) {
+    uint32_t b = (uint32_t)((int32_t (*)(int32_t))XBOX[1])(UM_Q);
+    sv_umb = b >> 28 == 4 && !(b & 3) && *(const uint32_t *)b == UM_Q ? b : 1;
+  }
+  return sv_umb > 1 && ((int32_t (*)(int32_t, int32_t))((const uint32_t *)sv_umb)[5])(w, 0) == 0x11;
+}
 static int32_t sv_held_step(void);
 static void sv_tick(void *ctrl, uint32_t r) {
-  int32_t t = SEL_TRACK, pg = sv_page(ctrl), on;
+  int32_t t = SEL_TRACK, pg = sv_page(ctrl), on, p = (pg & 4) << 2;
   uint8_t m = 0;
   if (t > 11) pg = 0;
   if (pg) m = MACHINE_OF(t);
+  pg &= 3;
+  /* um-draw: the view's page, 1 SRC / 2 SMPL, 3 / 4 their page 2 on a U slot (0029's records: no P1..P16 on the knobs,
+     the values the kit's words); the SMPL page's own values only on a U slot (knob k = P9 + k) */
+  if ((uint32_t)(m - 35) >= 5u) { if (p) sv.view = 0; }
+  else if (pg && sv_paged(p >> 4)) { p += 0x20; sv.view = 0; }
   on = pg && mr_vb(t, m) != 0x7f;
-  if (on && (!sv.on || sv.track != t || sv.mach != m)) {
-    sv.on = 1; sv.track = (uint8_t)t; sv.mach = m;
+  if (on && (!sv.on || sv.track != t || sv.mach != m || sv.pg != p)) {
+    if (sv.on && sv.pg != p) { sv.poff = sv.p_track; sv.pend29 |= 2; }   /* um-draw: the old page's off first, so an
+                                          older host (it drops a paged 29) ends its SRC view */
+    sv.on = 1; sv.track = (uint8_t)t; sv.mach = m; sv.pg = (uint8_t)p;
     sv.base = commits;
-    sv.pend29 = 1; sv.p_track = (uint8_t)t; sv.p_on = 1; sv.vals_all = 1;
+    sv.pend29 |= 1; sv.p_track = (uint8_t)(t | p); sv.p_on = 1; sv.vals_all = 1;
     sv.starts++;
   } else if (!on && sv.on) {
     sv.on = 0;
-    sv.pend29 = 1; sv.p_track = sv.track; sv.p_on = 0;
+    sv.pend29 |= 1; sv.p_on = 0;
     sv.ends++;
   }
   sv.covered = pg == 2;
-  sv.lock = sv.on && pg == 1 ? sv_held_step() : -1;   /* 1027e */
+  sv.lock = sv.on && pg == 1 && sv.pg < 0x20 ? sv_held_step() : -1;   /* 1027e (um-draw: P1..P8 / P9..P16 by the page) */
   if (r != sv.rx_seen) sv.idle = 0; else if (sv.idle < 0xffff) sv.idle++;
   sv.rx_seen = r;
   sv.show = sv.on && !sv.covered && commits != sv.base && sv.idle < TIMEOUT_TICKS && !st.active && !st.splash_on;
@@ -990,10 +1018,11 @@ static void sv_flush(void) {
   uint8_t b[9 + 32 + 1];               /* header 9, 16 values, F7 */
   uint16_t cur[16];
   int32_t i, lo = 16, hi = -1, k = 0;
-  if (sv.pend29) {
-    uint8_t m[10] = {0xf0, 0x7d, 0x52, 0x54, 0x29, 0x01, sv.p_track, sv.p_on, 0xf7};
+  while (sv.pend29) {                  /* um-draw: bit 1 first, the view before ends (its track byte with its page) */
+    int32_t o = sv.pend29 & 2;
+    uint8_t m[10] = {0xf0, 0x7d, 0x52, 0x54, 0x29, 0x01, o ? sv.poff : sv.p_track, o ? 0 : sv.p_on, 0xf7};
     if (!send(m, 9)) return;
-    sv.pend29 = 0;
+    sv.pend29 &= (uint8_t)(o ? 1 : 0);
     sv.s29++;
   }
   if (sv.diag_owed) {                  /* 1027d: F0 7D 52 54 2B 01 <state> <views> <vt 5 x 7 bits, MSB first> <age> F7 */
@@ -2327,7 +2356,7 @@ static int32_t ls_enc(int32_t idx, int32_t delta) {
   if (ls.on && idx != ls.knob) { ls_close(3); return 0; }
   if (idx != 0 || st.splash_on) return 0;
   if (!ls.on) {
-    if (sv.on && sv.show && (ls_banked(sv.mach) || SMP_M(sv.mach))) {   /* 7h: DSP SAMPLE's knob A is SMP (P11); 0.5.0 SAMPLER's */
+    if (sv.on && sv.show && !sv.pg && (ls_banked(sv.mach) || SMP_M(sv.mach))) {   /* 7h: DSP SAMPLE's knob A is SMP (P11); 0.5.0 SAMPLER's */
       ls.track = sv.track; ls.mach = sv.mach; ls.p = SMP_M(sv.mach) ? DSPS_P : 0;
     } else return 0;
     ls.on = 1; ls.knob = (uint8_t)idx; ls.tick0 = st.ticks;
@@ -2394,7 +2423,7 @@ static int32_t ls_release(uint32_t code) {
 static void ls_tick(void) {
   /* 1045: opened on the SMPL page the view comes on a tick after (29 1) and shows at the host's first frame: closed
      when it never showed within a second (an older host: knob D stock's until the next hello), or stopped showing */
-  if (ls.on && (!sv.on || !sv.show || sv.track != ls.track || sv.mach != ls.mach || st.active)) {
+  if (ls.on && (!sv.on || !sv.show || sv.pg || sv.track != ls.track || sv.mach != ls.mach || st.active)) {
     ls_close(5);
   }
   if (ls_in_gen != ls.br_gen) {        /* 1040: the host's 4A <track> <browse> */
@@ -2418,7 +2447,7 @@ static void u46_tick(void) {
     u46.src_t = 0;
     return;
   }
-  ok = sv.on && sv.show && sv.track == SEL_TRACK && sv.mach == u46.src_m;
+  ok = sv.on && sv.show && !sv.pg && sv.track == SEL_TRACK && sv.mach == u46.src_m;
   if (ok && ls_enc(0, 0)) { u46.src_t = 0; u46.src_lists++; }
 }
 
@@ -2613,7 +2642,7 @@ static void tick_body(void *ctrl) {
     else if (st.hello_n && st.hello_n < 3 && st.port_ticks == HELLO_TICKS + 20 * st.hello_n) {
       if (r == st.hello_rx) { st.hello_n++; st.pend_hello = 1; mr.all = 1; mr.kit_owed = 1; ar.owed = 0xfff; } else st.hello_n = 3;
     }
-    if (st.pend_hello && sv.on) { sv.pend29 = 1; sv.p_track = sv.track; sv.p_on = 1; sv.vals_all = 1; }   /* 1027 */
+    if (st.pend_hello && sv.on) { sv.pend29 = 1; sv.p_track = (uint8_t)(sv.track | sv.pg); sv.p_on = 1; sv.vals_all = 1; }   /* 1027 */
   } else {
     if (st.port_ticks) pmo.lost_n++;   /* pm: the port dropped: the modulation fades out (once a drop) */
     st.port_ticks = 0;
@@ -3099,7 +3128,7 @@ static int32_t key_body(void *brain, void *ev) {
   /* 1038: the bank list open (the page closed): the nav keys are the list's, another key closes it and goes on */
   if (!st.active && ls_key(code)) return 1;
   /* 1049: FUNC + YES on a banked machine's or DSP SAMPLE's SRC view (the host's): the list with the host's browser */
-  if (!st.active && !ls.on && code == K_YES && !st.splash_on && sv.on && sv.show && !sv.covered && ls.qn + 2 <= LS_NQ &&
+  if (!st.active && !ls.on && code == K_YES && !st.splash_on && sv.on && sv.show && !sv.pg && !sv.covered && ls.qn + 2 <= LS_NQ &&
       (int32_t)sv.track == SEL_TRACK && (ls_banked(sv.mach) || SMP_M(sv.mach)) && !(sq.mode && (sq.down[0] & 0xffffu)) &&
       (BIT(st.stock_down, K_FUNC) || BIT(st.both_down, K_FUNC) || BIT(st.our_down, K_FUNC))) {
     ls.track = sv.track; ls.mach = sv.mach; ls.p = SMP_M(sv.mach) ? DSPS_P : 0;
@@ -3177,7 +3206,7 @@ static int32_t key_body(void *brain, void *ev) {
   }
   /* 1036, the SRC view: an encoder's push goes to the host (31 down / up) and to stock, as before (nothing caught):
      the host's source list (GRANULAR SRC, WAVETABLE TBL, MULTISAMPLE INST) stays open while P1's push is held */
-  if (!st.active && sv.on && code >= K_PUSH0 && code <= K_PUSH7) {
+  if (!st.active && sv.on && !sv.pg && code >= K_PUSH0 && code <= K_PUSH7) {   /* (um-draw: page 1's only) */
     ux.push |= 1u << (code - K_PUSH0);
     ux.pushes++;
     queue_key(code, 1);

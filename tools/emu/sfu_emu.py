@@ -669,6 +669,130 @@ def t_umpages(e):
             f"{lock(e, s1, 0, 0, 12):04x} / {l4:04x}")
 
 
+
+# ---- um-draw (2026-11-19): plugin-drawn screens, the Rytm side (0026: the view message's page, the Sidecar's
+# docs/um-pages.md "Plugin-drawn screens"): 29 <t | (page - 1) << 4> <on> for the SRC page (1), the SMPL page (2), SRC page 2
+# (3) and SMPL page 2 (4) of a Sidecar track, the host's frames shown on each, every knob still the Rytm's / 0029's. The
+# test's host is a fixed schedule (no answers): a whole frame + commit every 200 ms from a time on (each page's frame its own:
+# a border, a checkerboard, `page` boxes top left), 3C keepalives, or nothing. Needs a set with 0026 (sfpm2; not umx).
+def ud_frame(page):
+    """A 1024 B frame in the panel's layout (rui_emu.oled's: byte (7 - y // 8) + 8 x, bit y % 8)."""
+    fb = bytearray(1024)
+    for x in range(128):
+        for y in range(64):
+            box = y < 14 and any(4 + 16 * i <= x < 16 + 16 * i for i in range(page)) and y >= 3
+            if x in (0, 127) or y in (0, 63) or box or (y >= 20 and (x // 4 + y // 4) & 1):
+                fb[(7 - y // 8) + 8 * x] |= 1 << (y % 8)
+    return bytes(fb)
+
+
+def ud_host(t0, t1, page, period=40, seq0=1):
+    """The host's frames: page's frame + commit every `period` M from t0 to t1 (M after the base)."""
+    fb, ev, seq = ud_frame(page), [], seq0
+    for t in range(t0, t1, period):
+        ev.append((t, "usb", P.rui_rect(seq, 0, 0, 16, 8, fb) + P.rui_commit(seq)))
+        seq = (seq + 1) & 0x7F or 1
+    return ev
+
+
+def ud_alive(t0, t1, period=40):
+    return [(t, "usb", P.rui_keepalive()) for t in range(t0, t1, period)]
+
+
+def ud_oled(log):
+    """dtboot's last panel (DTBOOT_OLED=1), half blocks -> the 1024 B frame (rui_emu.oled)."""
+    i = log.rfind("panel MCU OLED")
+    if i < 0:
+        return None
+    fb = bytearray(1024)
+    for ty, line in enumerate(log[i:].splitlines()[1:33]):
+        for x, ch in enumerate(line[:128]):
+            for dy, on in enumerate({"█": (1, 1), "▀": (1, 0), "▄": (0, 1)}.get(ch, (0, 0))):
+                if on:
+                    y = 2 * ty + dy
+                    fb[(7 - y // 8) + 8 * x] |= 1 << (y % 8)
+    return bytes(fb)
+
+
+def ud_run(e, name, length, ev):
+    s = e.run(name, length, ev, save=True, env={"DTBOOT_OLED": "1"})
+    v29 = [(m[6], m[7]) for m in e.sent if len(m) == 9 and m[4] == 0x29 and m[5] == 1]
+    v2a = [(m[6], m[7], m[8]) for m in e.sent if len(m) >= 10 and m[4] == 0x2A and m[5] == 1]
+    return s, v29, v2a, ud_oled(e.log)
+
+
+def t_umdraw(e):
+    """um-draw: the view message's page (29 <t | (page - 1) << 4> <on>) for the SRC / SMPL pages and SRC / SMPL page 2 of
+    a user machine's track, the host's frame shown on each, the knobs the Rytm's (2A) / 0029's (52 VALUES), an older
+    host's path (the old view's off first), stock when the frames stop or the host gives the screen back, a built-in
+    machine and a machine without draw. Screens: ud-src.png, ud-smpl.png, ud-src2.png, ud-smpl2.png."""
+    ka = U.UI["knob_enc"]
+    go, t = um_go()
+    nv = lambda v, a: v[[i for i, x in enumerate(v) if x == a][-1] + 1:] if a in v else None   # noqa: E731  after the last a
+    w0 = um_words(e, e.run("ud-base", t + 100, go, save=True))   # the kit's P1..P16 after the choice
+    # page 1: the SRC page (the plain 29, as since rui1027), a turn of knob B goes out as 2A, the frame stays
+    s, v29, v2a, scr = ud_run(e, "ud-src", t + 600, go + ud_host(t + 50, t + 600, 1) + [(t + 300, "turn", (f"{ka['B']}:+8", 3, 10))])
+    w = um_words(e, s)
+    U.check("umdraw: U1's SRC page = the plain 29 (F0 7D 52 54 29 01 00 01 F7), then all 16 in a 2A",
+            v29 and v29[-1] == (0x00, 1) and (0, 0, 16) in v2a, f"29 {v29} 2A {v2a[:4]}")
+    U.check("umdraw: the host's frame is the SRC page's screen, byte for byte", scr == ud_frame(1), "")
+    U.check("umdraw: knob B on the SRC view is the Rytm's: kit word P2 moved, 2A 00 01 01 sent", w[1] != w0[1] and
+            (0, 1, 1) in v2a, f"P2 {w[1]:04x} 2A {v2a}")
+    # page 2: the stock SMPL page (29 10 01 after page 1's off), P9..P16 as 2A from the page, knob A = P9 the kit's
+    s, v29, v2a, scr = ud_run(e, "ud-smpl", t + 650, go + [(t + 100, "press", "SMPL")] + ud_host(t + 150, t + 650, 2) +
+                              [(t + 350, "turn", (f"{ka['A']}:+8", 3, 10))])
+    w = um_words(e, s)
+    U.check("umdraw: SMPL on U1's track: 29 00 00 (page 1's off, an older host ends its view) then 29 10 01, then all 16",
+            nv(v29, (0x00, 1)) == [(0x00, 0), (0x10, 1)] and (0, 0, 16) in v2a, f"29 {v29}")
+    U.check("umdraw: the host's frame is the SMPL page's screen, byte for byte", scr == ud_frame(2), "")
+    U.check("umdraw: knob A on the SMPL view is the Rytm's P9: kit word P9 moved, 2A 00 08 01 sent", w[8] != w0[8] and
+            (0, 8, 1) in v2a, f"P9 {w[8]:04x} 2A {v2a}")
+    # page 3: SRC page 2 (0029's P17..P24): the frame instead of 0029's drawing, knob C is P19 as 52 VALUES, no kit word
+    ev = go + [(t + 150, "press", "SRC:300M"), (t + 250, "press", "DOWN")] + ud_host(t + 300, t + 750, 3) + \
+        [(t + 450, "turn", (f"{ka['C']}:+8", 3, 10))]
+    s, v29, v2a, scr = ud_run(e, "ud-src2", t + 750, ev)
+    g, vals = um_state(e, s), um_vals(e)
+    U.check("umdraw: SRC held + DOWN (SRC page 2): 29 00 00 then 29 20 01", nv(v29, (0x00, 1)) == [(0x00, 0), (0x20, 1)] and
+            g["pg"] == 1 and g["mtop"] == 1, f"29 {v29} {g}")
+    U.check("umdraw: the host's frame is SRC page 2's screen, byte for byte", scr == ud_frame(3), "")
+    U.check("umdraw: knob C on SRC page 2 is still 0029's: P19 up from 102 as 52 VALUES (V1, U1, P17..), the kit's words "
+            "untouched", g["v"][2] > 102 and bool(vals) and vals[-1]["first"] == 17 and vals[-1]["values"] == g["v"] and
+            um_words(e, s) == w0, f"{g['v']} sent {vals[-1:]}")
+    # page 4: SMPL page 2 (P25..P32), knob A is P25 as 52 VALUES
+    ev = go + [(t + 100, "press", "SMPL"), (t + 250, "press", "SMPL:300M"), (t + 350, "press", "DOWN")] + \
+        ud_host(t + 400, t + 800, 4) + [(t + 550, "turn", (f"{ka['A']}:+8", 3, 10))]
+    s, v29, v2a, scr = ud_run(e, "ud-smpl2", t + 800, ev)
+    g, vals = um_state(e, s), um_vals(e)
+    U.check("umdraw: SMPL held + DOWN (SMPL page 2): 29 10 00 then 29 30 01", nv(v29, (0x10, 1)) == [(0x10, 0), (0x30, 1)] and
+            g["pg"] == 2 and g["mtop"] == 2, f"29 {v29} {g}")
+    U.check("umdraw: the host's frame is SMPL page 2's screen, byte for byte", scr == ud_frame(4), "")
+    U.check("umdraw: knob A on SMPL page 2 is 0029's P25 (52 VALUES), the kit's P9 untouched",
+            g["v"][8] > 108 and bool(vals) and vals[-1]["values"] == g["v"] and um_words(e, s) == w0,
+            f"{g['v']} sent {vals[-1:]}")
+    # back: SRC held + UP = page 1's on again; FLTR: the view's off (the plain byte)
+    ev = go + [(t + 150, "press", "SRC:300M"), (t + 250, "press", "DOWN"), (t + 500, "press", "SRC:300M"), (t + 600, "press", "UP"),
+               (t + 900, "press", "FLTR")] + ud_host(t + 50, t + 1000, 1)
+    s, v29, v2a, scr = ud_run(e, "ud-back", t + 1000, ev)
+    U.check("umdraw: SRC held + UP: 29 20 00, 29 00 01 (page 1 again); FLTR: 29 00 00; the stock FLTR page (no frame)",
+            nv(v29, (0x20, 1)) == [(0x20, 0), (0x00, 1), (0x00, 0)] and scr != ud_frame(1), f"29 {v29}")
+    # a machine without draw (the host sends nothing): page 2 is 0029's own drawing, the 29s as before
+    ev = go + [(t + 150, "press", "SRC:300M"), (t + 250, "press", "DOWN")]
+    s, v29, v2a, ref = ud_run(e, "ud-nodraw", t + 750, ev + ud_alive(t + 50, t + 750))
+    U.check("umdraw: a machine whose plugin does not draw (no frame): SRC page 2 is 0029's (H17..), 29 20 01 sent",
+            (0x20, 1) in v29 and um_state(e, s)["pg"] == 1 and ref != ud_frame(3) and ref is not None, f"29 {v29}")
+    # the frames stop: stock (0029's page 2) a second later; the host's 3A 00 00: stock at once, though it stays
+    s, v29, v2a, scr = ud_run(e, "ud-stop", t + 750, ev + ud_host(t + 300, t + 450, 3))
+    U.check("umdraw: the host's frames stop on SRC page 2: 0029's page again after the 1 s timeout (as the run without "
+            "frames)", scr == ref, "")
+    s, v29, v2a, scr = ud_run(e, "ud-give", t + 750, ev + ud_host(t + 300, t + 450, 3) + [(t + 460, "usb", P.rui_open(0, 0))] +
+                              ud_alive(t + 500, t + 750))
+    U.check("umdraw: the host's 3A 00 00 on SRC page 2: 0029's page again with the host still there", scr == ref, "")
+    # a built-in machine (the base's BD): no 29 on SRC or SMPL, frames never shown
+    s, v29, v2a, scr = ud_run(e, "ud-builtin", 700, ud_host(50, 700, 1) + [(300, "press", "SMPL")])
+    U.check("umdraw: a built-in machine's SRC / SMPL pages: no 29, the host's frames never shown", not v29 and
+            scr != ud_frame(1) and e.peek(s, 0x8000ea00, 1)[0] < 35, f"29 {v29}")
+
+
 X_TIME = 1124 + DL   # ui_sum ui_max ui_n mt_sum mt_max mt_n (DTCN0 counts)
 ST_TICKS = 1034   # m68k: 2-byte alignment (calls at 1030)
 
@@ -1111,7 +1235,7 @@ def t_fmname(e):
           glyphs(rows, 76, 100, 6, 100) is not None, "")
 
 
-TESTS = {"umpages": t_umpages, "fmname": t_fmname, "enum": t_enum, "typelist": t_typelist, "enumlock": t_enumlock, "enumkit": t_enumkit, "ext": t_ext,
+TESTS = {"umpages": t_umpages, "umdraw": t_umdraw, "fmname": t_fmname, "enum": t_enum, "typelist": t_typelist, "enumlock": t_enumlock, "enumkit": t_enumkit, "ext": t_ext,
          "labels": t_labels, "fullnames": t_fullnames, "xpages": t_xpages, "cost": t_cost, "bw": t_bw, "bw2": t_bw2, "bwwrap": t_bwwrap, "pages": t_pages, "names": t_names, "locks": t_locks, "save": t_save, "stock": t_stock, "kits": t_kits}
 
 

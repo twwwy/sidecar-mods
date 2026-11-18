@@ -2836,3 +2836,68 @@ existing symbols, so there is nothing new to port for 1.74.
   `upstock` cannot take the arrows: they move a word at 0x800067bc whose start value differs between the stock base
   and the mod's, so its absolute compare fails on the baseline (fka) as well. fka and fk1 give identical values there.
 - `stockupkeys` UPKEYS adds LEFT and RIGHT (shard 3 is 19:30).
+
+## um-draw: the view message's page - plugin-drawn screens, the Rytm side (2026-11-19, emulator only)
+
+The Sidecar's `docs/um-pages.md` "Plugin-drawn screens" (sidecar-firmware `feat/um-pages`): a user machine's plugin may
+draw the Rytm's screen for its track's SRC page, the stock SMPL page and 0029's SRC / SMPL page 2 (P17..P32). The host
+draws while the Rytm says which page of a track shows; every key and knob stays the Rytm's (and 0029's on page 2).
+
+**The message** (1027's 29, same command, version, length): the track byte is `t | (page - 1) << 4`.
+
+| bytes | when |
+|---|---|
+| `F0 7D 52 54 29 01 <t> <on> F7` | page 1, the stock SRC page: unchanged since rui1027 |
+| `F0 7D 52 54 29 01 <t \| 0x10> <on> F7` | page 2, the stock SMPL page of a Sidecar track (vb not 0x7F, as for 29 t) |
+| `F0 7D 52 54 29 01 <t \| 0x20> <on> F7` | page 3, SRC page 2 of a U slot (0021's `um_box` page(0, 0) = 0x11) |
+| `F0 7D 52 54 29 01 <t \| 0x30> <on> F7` | page 4, SMPL page 2 (page(1, 0) = 0x11) |
+
+- One view at a time, the same state machine as 1027: `on` when the page shows (also on a track or machine change and
+  after each hello, with the page's byte), `off` naming the view it ends. **A page change sends the old view's off first**
+  (e.g. SRC -> SMPL: `29 t 0`, `29 t|0x10 1`; SRC held + DOWN: `29 t 0`, `29 t|0x20 1`; + UP: `29 t|0x20 0`, `29 t 1`).
+  The doc lets the Rytm skip it; it is sent because an **older host** drops a paged 29 (track byte over 11, counted as
+  malformed): without the off it would keep its page-1 view on and might commit a SRC frame (on its next 2A) over the
+  SMPL page. With it, an older host ends the view and the stock page (0029's page 2 included) stays. Its later paged
+  `off`s are dropped as well (harmless: it has no view).
+- **2A** as for the SRC view on all four pages (all 16 after the `on`, the changed span each tick). On the SMPL page of a
+  U slot P9..P16 are read through the SamplePageView's own methods (knob k = P9 + k: record by its vtable +0x9c, value by
+  +0x54 page_get_value, the same function as SynthPageView's [code, 1.74 image]) so a turn is not late by the kit's
+  drain; P1..P8 the kit words. Another machine's SMPL page and pages 3 / 4: the kit words (pages 3 / 4 turn no P1..P16).
+  A held step's values (0x40) on pages 1 and 2 (that page's knobs; the other eight the sound's); on pages 3 / 4 the
+  sound's (P17..P32 lock nothing; the plugin gets P1..P16 unflagged there).
+- **The frame**: unchanged code: `sv.show` on any page (the host's frame from its first commit after the view's on,
+  while host messages keep coming, nothing covering, TRK + YES / the splash first); stock when it stops (1 s) or on
+  `3A x 0`. On pages 3 / 4 the stock screen is 0029's page 2 (its records, title).
+- **Page 1 only**: the bank list on knob A (1038 / 7h), FUNC + YES's browser (1049), UP + SRC's list (1046) and the
+  encoder pushes as 31 (1036): `sv.pg` 0.
+- **Which page**: `sv_page` returns the SMPL page too (| 4, sv.view = its SamplePageView); `sv_tick` asks 0021's
+  `um_box` (ext_steps(UM_Q), once, as 0029) whether a U slot's page shows its page 2 (`sv_paged`); no box (an older
+  0021): pages 1 / 2 only. State in the struct's two pad bytes (`sv.pg` = (page - 1) << 4, `sv.poff` the view to end;
+  `pend29` bit 1 = that off owed): no field moved (sv_emu.py's offsets).
+
+**Cost**: 0026's code +436 B (sv_tick / sv_flush / sv_word, the page-1 gates), `.bss` +4. The full set (`sfpm2`)
+leaves **2480 B** of elekloader RAM (`sfpm1` 2920). No stock address is new (nothing to port for 1.74).
+
+**Tests** [measured, rytm-emu 1.74 (fix/strict-page0-174), DTEMU_STRICT=1] `tools/emu/sfu_emu.py sfpm2 umdraw`, 17 checks
+(and each run's fault / strict checks). The test's host is a fixed schedule of whole frames + commits every 200 ms (each
+page its own frame: a border, a checkerboard, `page` boxes top left), keepalives, or nothing:
+- SRC page: the plain `29 00 01`, all 16 in a 2A, the frame byte for byte, knob B: kit word P2 moves, 2A 00 01 01;
+- SMPL: `29 00 00`, `29 10 01`, all 16; the frame; knob A: kit word P9 moves, 2A 00 08 01 (the page's own value);
+- SRC held + DOWN: `29 00 00`, `29 20 01`; the frame; knob C: P19 out as 52 VALUES, the kit's P1..P16 untouched;
+- SMPL held + DOWN: `29 10 00`, `29 30 01`; the frame; knob A: P25 as 52 VALUES, the kit untouched;
+- SRC held + UP: `29 20 00`, `29 00 01`; FLTR: `29 00 00`, the stock FLTR page;
+- no frames (a plugin without draw): 0029's page 2, `29 20 01` sent; frames stopping: that same screen after the 1 s
+  timeout; the host's `3A 00 00` with keepalives going on: that same screen;
+- a built-in machine (the base's BD): no 29 on SRC / SMPL, no frame shown.
+On `sfpm1` (the base) the new-protocol checks fail as they should (8: no paged 29, no SMPL view); its SRC page 2 already
+showed the page-1 frame (the same SynthPageView), which this build replaces by the page-3 view.
+Whole suites, `sfpm2` against `sfpm1` (the same set and params, 0021 diag = 1): `sfu_emu.py all` 371 pass / 0 fail
+(sfpm1 363 / 8: umdraw's new checks), `us_emu.py all` 366 / 1 (sfpm1 366 / 1: `dspmod` wants a diag = 0 build).
+Screens (build/emu/sfpm2/): `ud-src.png`, `ud-smpl.png`, `ud-src2.png`, `ud-smpl2.png`.
+
+**End to end** (emulator, no hardware): the emulated Rytm (`sfpm2`) against the real core (sidecar-firmware 183712d,
+`make -C core lib`; sim/um_link.py's host plus the remote UI's tick, a scratch driver) with plugins/api3_test's pages
+probe (`api3_pages`, draw) as U1 on BD: the probe's frame on all four pages (its page pixels 1 / 2 / 3 / 4), the 29s as
+above, a P19 turn on page 3 (P19's bar 24 -> 26) and a P25 turn on page 4 redrawn by the host at once. The host takes a
+52 VALUES turn only once the voice is known to play the machine (a trig): before BD's first trig the turn is dropped and
+the frame stays (host rule, docs/um-pages.md "The host takes a VALUES ...").

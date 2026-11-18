@@ -683,3 +683,12 @@ emulator needs dtboot's `HOOK_WINDOW` 0x0800_0000 for us_emu (tools/emu/README.m
 
 **Not done / open**: no hardware run. MIDI out of a stepped knob not measured. 1.73: the new +0x2c claim's stock hash is
 derived from 1.74's address map (0x400a95dc), not checked against a 1.73 image (no 1.73 build was made).
+
+### 14b. um-draw (2026-11-19): plugin-drawn screens on page 2
+
+The Sidecar's docs/um-pages.md "Plugin-drawn screens": while SRC / SMPL page 2 of a U slot shows, 0026 reports the view as
+page 3 / 4 (`29 <t | 0x20> <on>` / `29 <t | 0x30> <on>`) and shows the host's frames there instead of 0029's own page-2
+drawing (0026 design.md "um-draw"). 0029 is unchanged: 0026 reads which page shows from 0021's `um_box` (`page(w, 0)`),
+the knobs keep going to the paged records (52 VALUES), the keys, titles, locks and #15's SEND FX pages are as in `sfpm1`.
+0029's page 2 is what shows until the host's first frame after the view's `on`, and again when its frames stop (1 s) or it
+gives the screen back (`3A x 0`). Tests: `sfu_emu.py sfpm2 umdraw` (0026's set; the umx sets have no 0026).
