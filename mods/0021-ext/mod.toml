@@ -56,7 +56,9 @@ Tested in rytm-emu and with the real Teensy over the bridge; never on a Rytm
 
 With slots=1 the mod links into elekloader's DDR area (--area-elek 0021-ext, needs 0027), its
 fixed-address boxes staying as registry patches (design.md, "0021 in the area"). Machine 42 is MD
-there (design.md, "MD"); DIGIDRUM stays only in the slots=0 image.
+there (design.md, "MD"); DIGIDRUM stays only in the slots=0 image. um-pages (slots=1): 52 UM PAGES kept per slot
+in the heap, a slot's P17..P32 values per voice, its page-2 records and stepped knobs set up for 0029 (um_box; design.md
+"um-pages").
 """
 
 [sources]

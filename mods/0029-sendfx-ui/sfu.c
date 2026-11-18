@@ -52,7 +52,9 @@ typedef int32_t (*sprintf_fn)(void *str, const char *fmt, ...);
 typedef void (*send_fn)(int32_t len, const uint8_t *data);
 typedef void (*void_fn)(void);
 
+typedef int32_t (*dl_fn)(void *set, int32_t id, int32_t d, int32_t t, int32_t f, uint8_t *o);
 #define S_READ  ((rd_fn)0x400a8dfau)
+#define S_DELTA ((dl_fn)0x400a95dcu)   /* SoundParameterSet +0x2c: a knob's turn (param_apply_delta's dispatch) */
 #define S_WRITE ((wr_fn)0x400a9f9eu)
 #define S_LGET  ((lg_fn)0x400a9848u)
 #define S_LSET  ((ls_fn)0x400a98bau)
@@ -211,17 +213,30 @@ struct sfu_x sfu_x;   /* .bss (zeroed by core-ar2's boot copier) */
    first. SRC (FX 1) / SMPL (FX 2) held + DOWN / UP steps the page (no cycling); the page stays when the page is left. A
    struct of its own (not appended to sfu_x), so the emulator tests read it by its symbol. */
 #define NPX 12
+/* um-pages: 0021's box (ext.c um_box; ext_steps(UM_Q) gives its address): a U slot's paged records and stepped knobs */
+#define UM_Q 0x554d5047
+struct um_box {
+  uint32_t magic;
+  int32_t (*get)(int32_t r), (*put)(int32_t r, int32_t v), (*steps)(int32_t r);
+  int32_t (*text)(int32_t r, int32_t w, char *str, int32_t draw);
+  int32_t (*page)(int32_t w, int32_t dir), (*which)(int32_t r);
+  const char *(*title)(void);
+};
+/* lab[k]'s TYPE's P5..P16 short / full names (51 first p 5..16; MIDI task, as lng). um-pages: in the firmware's heap
+   (4.2 kB, allocated at the first ev_tick before the mailbox opens), so the full set's elekloader RAM has room for the
+   user machines' pages; sfu_p's fields after it moved by 4220 B (tools/emu/sfu_emu.py PG_*) */
+struct sfu_pn { char xsh[NLT][NPX][5]; char xlng[NLT][NPX][LNG + 1]; };
 struct sfu_p {
-  char xsh[NLT][NPX][5];          /* lab[k]'s TYPE's P5..P16 short / full names (51 first p 5..16; MIDI task, as lng) */
-  char xlng[NLT][NPX][LNG + 1];
+  struct sfu_pn *pn;              /* 0: no heap - P5..P16 keep P<n> names */
   uint8_t np[NLT];                /* the highest P the 51s named for lab[k] (0 none): the page count follows it */
   uint8_t pg[2], npg[2], nx[2];   /* FX k's page (0 = TYPE..WID), its pages (1..3) and its P5.. count (0..12) */
   uint8_t pv[2][NPX];             /* P5..P16 as the host last sent them or a knob last set them */
   uint16_t pv_tx[2];              /* bit j: FX k's P(5 + j) turned, not sent yet (UI task) */
   volatile uint8_t pv_rx;         /* a host value taken (MIDI task): the views redraw */
   uint8_t ontop;                  /* 1 / 2: SEND FX 1 / 2 is the screen (the tick, from the view list), 0 neither */
-  uint8_t kdef, kused, kheld, keat, fdown, pad;   /* SRC / SMPL's press held back (its code); an arrow paged meanwhile;
-                                     bit k: SRC / SMPL down; bit 0 / 1: UP / DOWN's press taken; FUNC down */
+  uint8_t kdef, kused, kheld, keat, fdown, adown;   /* SRC / SMPL's press held back (its code); an arrow paged meanwhile;
+                                     bit k: SRC / SMPL down; bit 0 / 1: UP / DOWN's press taken; FUNC down; (um-pages)
+                                     bit 0 / 1: UP / DOWN down */
   uint32_t pv_hold[2];            /* TIMER | 1 at FX k's last send (BW_HOLD's crossing rule) */
   uint32_t pv_sent, pv_got, steps, replays, defers, retitles;   /* counters (tests) */
   void *fxview;                   /* the page view the SEND FX knobs were last read through (sfu_get) */
@@ -230,6 +245,12 @@ struct sfu_p {
   char pl_s[2][8][5], pl_l[2][8][LNG + 1];   /* FX k's paged records' short / long names now */
   char ttl[2][16];                /* the page's title: "SEND FX 1 2/3" (an effect with pages), else n_fx1 / n_fx2 */
   void *ctrl;                     /* the UI controller the tick was last given (its view list: top_page) */
+  /* um-pages (appended: the tests' offsets above stay): a user machine's SRC / SMPL page 2 (0021's um_box) */
+  const struct um_box *umb;       /* 0021's box (0: none, or not asked yet; umq: asked) */
+  uint8_t umq, mtop, pad2[2];     /* mtop: 1 / 2 the selected U slot's SRC / SMPL page with a page 2 is the screen */
+  void *mview;                    /* the page view a U slot's records were last read through (sfu_get) */
+  uint32_t mvt;
+  uint32_t mpages, msteps, mdeltas, mtitles;   /* counters (tests): pages turned, stepped writes, paged turns, titles */
 };
 struct sfu_p sfu_p;
 #define PG sfu_p
@@ -324,11 +345,11 @@ static int32_t xmode(int32_t r) {
   if (X.xtick[i] != st.ticks + 1) {   /* asked once a UI tick: a list's length follows the host's 16 / 17 / 1B */
     int32_t m = ((int32_t (*)(int32_t))XBOX[1])(r);
     X.xsteps++;
-    X.xm[i] = (uint8_t)(m >> 8 & 3);
+    X.xm[i] = (uint8_t)(m >> 12 & 1 ? 4 : m >> 8 & 3);   /* um-pages: bit 12, a stepped knob (mode 4, the word kept) */
     X.xn[i] = (uint8_t)m;
     X.xf[i] = (uint8_t)(m >> 10 & 1);
     X.xk[i] = (uint8_t)(m >> 11 & 1);
-    if (X.xn[i] < 2) X.xm[i] = 0;
+    if (X.xn[i] < 2 && X.xm[i] != 4) X.xm[i] = 0;
     X.xtick[i] = st.ticks + 1;
   }
   d = DESC(r);
@@ -343,7 +364,8 @@ static int32_t xmode(int32_t r) {
       d[8] = (uint32_t)sfu_xtext;
       X.xwraps++;
     }
-    rec[3] = (uint32_t)(X.xn[i] - 1) << 8 | (X.xk[i] ? 0xe0u : 0);   /* every time: 0021 writes a slot's ranges at its
+    if (X.xm[i] != 4)   /* (a stepped knob keeps 0021's range: the word itself, 0..0x7f00) */
+      rec[3] = (uint32_t)(X.xn[i] - 1) << 8 | (X.xk[i] ? 0xe0u : 0);   /* every time: 0021 writes a slot's ranges at its
                                                                       page set-up; rui1038: a banked knob up to bank H */
   } else if (d[8] == (uint32_t)sfu_xtext) {   /* a list gone (another project, no presets): the dial back */
     d[0] = X.xsave[i][0]; d[1] = X.xsave[i][1]; d[2] = X.xsave[i][2]; d[4] = X.xsave[i][3]; d[12] = X.xsave[i][4];
@@ -354,6 +376,7 @@ static int32_t xmode(int32_t r) {
 }
 static int32_t x_knob(int32_t r, int32_t h) {
   int32_t i = r - XR0, v = h >> 8, n = X.xn[i];
+  if (X.xm[i] == 4) return h;   /* um-pages: a stepped knob's value is its word */
   if (v < 0) v = 0;
   if (v > 127) v = 127;
   if (X.xm[i] == 1) v = (v * n) >> 7;
@@ -362,6 +385,7 @@ static int32_t x_knob(int32_t r, int32_t h) {
 }
 static int32_t x_half(int32_t r, int32_t v) {
   int32_t i = r - XR0, k = v >> 8, n = X.xn[i];
+  if (X.xm[i] == 4) return v;
   if (k < 0) k = 0;
   if (k > n - 1) k = X.xf[i] && X.xm[i] == 2 ? 0 : n - 1;
   if (X.xm[i] == 1) k = (128 * k + n - 1) / n;   /* the zone's lowest value: v x N / 128 reads k again */
@@ -375,6 +399,7 @@ static int32_t x_keep(int32_t r, int32_t v, int32_t cur) {
 /* 0021's value text, given the stored value (its zone / entry rule), for the knob's step */
 static int32_t xname(void *functor, int32_t value, void *str) {
   int32_t r = (int32_t)(((uint32_t)functor - DESC_BASE - 20u) / 84u), i = r - XR0;
+  if ((uint32_t)i < NXR && X.xm[i] == 4 && PG.umb) return PG.umb->text(r, value, str, 1);   /* um-pages: "B3 / B12" */
   if ((uint32_t)i >= NXR || !X.xtext[i]) return STR_PRINTF(str, fmt_d, s_empty, value >> 8);
   if (X.xm[i]) value = x_half(r, value), X.steps--;
   return ((int32_t (*)(void *, int32_t, void *))X.xtext[i])(functor, value, str);
@@ -385,6 +410,7 @@ static int32_t xname(void *functor, int32_t value, void *str) {
    knobs print their number in the dial already and keep 0021's text. */
 int32_t sfu_xtext(void *functor, int32_t value, void *str) {
   int32_t r = (int32_t)(((uint32_t)functor - DESC_BASE - 20u) / 84u), i = r - XR0, k;
+  if ((uint32_t)i < NXR && X.xm[i] == 4 && PG.umb) return PG.umb->text(r, value, str, 0);   /* um-pages: the entry */
   if ((uint32_t)i < NXR && X.xtext[i] && (X.xm[i] == 1 || X.xm[i] == 2)) {
     k = value >> 8;
     if (k < 0) k = 0;
@@ -407,12 +433,34 @@ static int32_t pq(int32_t id, int32_t *k) {
   return q < PG.nx[*k] ? q : -2;
 }
 
-/* page_get_value's gate: our records, and 0021's while stepped (their locks through the set, not the raw word) */
-int32_t sfu_isext(int32_t id) { return BW(id) || xmode(id) != 0; }
+/* um-pages: a U slot record on its page 2 (0021's um_get): its value << 8, -2 no knob there; -1 not paged */
+static int32_t um_val(int32_t id) { return PG.umb && (uint32_t)(id - XR0) < NXR ? PG.umb->get(id) : -1; }
+/* um-pages: a stepped knob's turn (d: the set's delta, 0x100 a detent of the enum profile it has, x4 pushed; a fine one
+   less) from the word cur: the next entry's exact word (52 STEPS: v14(q) = (q x 16256 + (n - 1) / 2) / (n - 1), the
+   word 2 x v14), never past either end; pushed, a pair's row (its names' count). Returns the delta that lands there. */
+static int32_t step_to(int32_t id, int32_t cur, int32_t d) {
+  int32_t i = PG.umb ? PG.umb->steps(id) : 0, n = i & 0xffff, np = i >> 16, q;
+  if (n < 2 || !d) return d;
+  q = d / 256;
+  if (!q) q = d > 0 ? 1 : -1;
+  if (np && (q >= 4 || q <= -4)) q = q > 0 ? np : -np;
+  i = (((cur >> 1) & 0x3fff) * (n - 1) + 8128) / 16256;
+  q += i > n - 1 ? n - 1 : i;
+  if (q < 0) q = 0;
+  if (q > n - 1) q = n - 1;
+  PG.msteps++;
+  return ((q * 16256 + (n - 1) / 2) / (n - 1) << 1) - cur;
+}
+
+/* page_get_value's gate: our records, and 0021's while stepped (their locks through the set, not the raw word); um-pages:
+   a U slot's records while its page 2 can show (the view is noted, its values come from the set) */
+int32_t sfu_isext(int32_t id) { return BW(id) || xmode(id) != 0 || (PG.umb && PG.umb->which(id)); }
 
 /* the wrapped vtable entries (ptr patches in the registry) */
 int32_t sfu_s_read(void *set, int32_t id) {
-  int32_t r = S_READ(set, id);
+  int32_t r = um_val(id);
+  if (r != -1) r = r < 0 ? 0 : r;   /* um-pages: the Sidecar's P17..P32, never the kit's word */
+  else r = S_READ(set, id);
   if (OURS(id)) return half_of(id - ID0, r);
   return xmode(id) ? x_knob(id, r) : r;
 }
@@ -431,8 +479,25 @@ int32_t sfu_f_read(void *set, int32_t id) {
 }
 int32_t sfu_s_write(void *set, int32_t id, int32_t v, int32_t a, int32_t b) {
   if (OURS(id)) { st.calls++; v = merge(id - ID0, S_READ(set, id), v); }
+  else if (um_val(id) != -1) return PG.umb->put(id, xmode(id) ? x_half(id, v) : v);   /* um-pages: kept, sent */
   else if (xmode(id)) v = x_keep(id, x_half(id, v), S_READ(set, id));
   return S_WRITE(set, id, v, a, b);
+}
+/* um-pages: SoundParameterSet +0x2c, a knob's turn (param_apply_delta: set, id, delta, track, FUNC, out flag). A paged
+   record takes it here (read + delta, the record's range, the write above: no kit word, no CC out); a stepped one moves
+   one entry a detent and goes on as stock's turn with the delta to that entry's word. */
+int32_t sfu_s_delta(void *set, int32_t id, int32_t d, int32_t t, int32_t f, uint8_t *o) {
+  if (um_val(id) != -1) {
+    const int32_t *r = (const int32_t *)REC(id);
+    int32_t v = sfu_s_read(set, id) + d;
+    if (o) *o = 0;
+    if (v < r[2]) v = r[2];
+    if (v > r[3]) v = r[3];
+    PG.mdeltas++;
+    return sfu_s_write(set, id, v, 0, 0);
+  }
+  if (xmode(id) == 4) d = step_to(id, S_READ(set, id), d);
+  return S_DELTA(set, id, d, t, f, o);
 }
 /* FX words 38..41 have no stock storage map: the stock write's project-copy observer indexes the 38-entry
    FX reverse map with them and writes a wrong slot [measured: a stray byte in stored FX slot 0]. So their
@@ -479,7 +544,7 @@ int32_t sfu_f_write(void *set, int32_t id, int32_t v, int32_t a, int32_t b) {
 }
 int32_t sfu_s_lget(void *set, int32_t id, int32_t step) {
   int32_t r;
-  if (OURS(id) && KITONLY(id - ID0)) return -1;
+  if ((OURS(id) && KITONLY(id - ID0)) || um_val(id) != -1) return -1;   /* (um-pages: P17..P32 lock nothing) */
   r = S_LGET(set, id, step);
   if (r < 0) return r;
   if (OURS(id)) return half_of(id - ID0, r);
@@ -502,6 +567,12 @@ int32_t sfu_s_lset(void *set, int32_t id, int32_t v, int32_t step) {
     cur = S_LGET(set, id, step);
     if (cur < 0) cur = S_READ(set, id);
     v = merge(id - ID0, cur, v);
+  } else if (um_val(id) != -1) {
+    return 0;   /* um-pages: a paged knob locks nothing (no sound word) */
+  } else if (xmode(id) == 4) {   /* um-pages: a stepped knob's lock turn, one entry a detent from the lock (or the base) */
+    int32_t cur = S_LGET(set, id, step);
+    if (cur < 0) cur = S_READ(set, id);
+    v = cur + step_to(id, cur, v - cur);
   } else if (xmode(id)) {   /* a stepped list knob locks the stored value; rui1038: a banked one the lock's (or word's) bank */
     int32_t cur = S_LGET(set, id, step);
     v = x_keep(id, x_half(id, v), cur >= 0 ? cur : S_READ(set, id));
@@ -529,6 +600,7 @@ int32_t sfu_get(void **view, int32_t id, int32_t lock) {
   uint32_t *vt = (uint32_t *)*set;
   int32_t v = -1, k;
   if (slot_of(id, &k) >= 0) { PG.fxview = view; PG.fxvt = *(uint32_t *)view; }   /* sendfx-pages: the SEND FX page's view */
+  else if (PG.umb && PG.umb->which(id)) { PG.mview = view; PG.mvt = *(uint32_t *)view; }   /* um-pages: a U slot's page */
   if (lock >= 0) v = ((lg_fn)vt[0x3c / 4])(set, id, lock);
   if (v < 0) v = ((rd_fn)vt[0x28 / 4])(set, id);
   return v;
@@ -647,8 +719,8 @@ static void take_names(const uint8_t *d, int32_t len) {
     int32_t q = p0 - 1 + j;           /* the effect's P(q + 1) = the Rytm's P(q + 2) */
     const uint8_t *src = d + 9 + 20 * j + 4;
     char *L;
-    if (q > 15) break;
-    L = q < 4 ? X.lng[k][q] : PG.xlng[k][q - 4];
+    if (q > 15 || (q >= 4 && !PG.pn)) break;
+    L = q < 4 ? X.lng[k][q] : PG.pn->xlng[k][q - 4];
     for (c = 0; c < LNG; ++c) {
       uint8_t ch = src[c];
       if (ch < 0x20 || ch > 0x7e) break;
@@ -660,9 +732,9 @@ static void take_names(const uint8_t *d, int32_t len) {
       for (c = 0; c < 4; ++c) {
         uint8_t ch = src[c - 4];
         if (ch < 0x20 || ch > 0x7e) break;
-        PG.xsh[k][q - 4][c] = (char)ch;
+        PG.pn->xsh[k][q - 4][c] = (char)ch;
       }
-      PG.xsh[k][q - 4][c] = 0;
+      PG.pn->xsh[k][q - 4][c] = 0;
     }
     if (q + 1 > PG.np[k]) PG.np[k] = (uint8_t)(q + 1);
   }
@@ -886,10 +958,10 @@ static void apply_page(int32_t k) {
     uint32_t *r = REC(id);
     char *S = PG.pl_s[k][s], *L = PG.pl_l[k][s];
     S[0] = L[0] = 0;
-    if (named && q < PG.nx[k]) {
-      for (c = 0; c < 4 && PG.xsh[ei][q][c]; ++c) S[c] = PG.xsh[ei][q][c];
+    if (named && q < PG.nx[k] && PG.pn) {
+      for (c = 0; c < 4 && PG.pn->xsh[ei][q][c]; ++c) S[c] = PG.pn->xsh[ei][q][c];
       S[c] = 0;
-      for (c = 0; c < LNG && PG.xlng[ei][q][c]; ++c) L[c] = PG.xlng[ei][q][c];
+      for (c = 0; c < LNG && PG.pn->xlng[ei][q][c]; ++c) L[c] = PG.pn->xlng[ei][q][c];
       L[c] = 0;
     }
     if (q < PG.nx[k] && !S[0]) { S[0] = 'P'; S[1] = (char)('0' + (q + 5) / 10); S[2] = (char)('0' + (q + 5) % 10); S[3] = 0; }
@@ -1008,11 +1080,10 @@ typedef void (*sdt_fn)(void *s);
    walks it), and its knob A is TYPE's record (DELAY / REVERB's is not). [measured, rytm-emu 1.74: MainScreenView
    TransportView PatternGridView KeyboardView FxPageView PatternSelectionView HelpBubbleView QuickPerformanceView
    SamplerLedView on SEND FX 1; another FxPageView object on REVERB; one GlobalMenu-class view alone in GLOBAL] */
-static int32_t top_page(void *ctrl) {
-  const uint8_t *c = (const uint8_t *)ctrl;
+static int32_t listed(const uint8_t *c, void *view, uint32_t vt) {   /* view is the screen (see top_page) */
   const uint32_t *n = *(const uint32_t *const *)(c + 28);
   int32_t k, j, led = 0, found = 0;
-  if (!PG.fxview) return 0;
+  if (!view) return 0;
   for (k = 0; k < 16 && n && (const uint8_t *)n != c + 20; ++k) {
     const uint32_t *v = (const uint32_t *)n[2];
     if (!v) return 0;
@@ -1020,18 +1091,32 @@ static int32_t top_page(void *ctrl) {
       for (j = 0; j < 4 && padviews[j] != v[0]; ++j) {}
       if (j == 4) return 0;
     } else if (v[0] == VT_SAMPLELED) led = 1;
-    else if (v == (const uint32_t *)PG.fxview && v[0] == PG.fxvt) found = 1;
+    else if (v == (const uint32_t *)view && v[0] == vt) found = 1;
     n = (const uint32_t *)n[0];
   }
-  if (!led || !found) return 0;
-  j = ((int32_t (*)(void *, int32_t))((const uint32_t *)PG.fxvt)[0x9c / 4])(PG.fxview, 0);
+  return led && found;
+}
+#define KNOB_REC(view, vt, k) (((int32_t (*)(void *, int32_t))((const uint32_t *)(vt))[0x9c / 4])((view), (k)))
+static int32_t top_page(void *ctrl) {
+  int32_t j;
+  if (!listed((const uint8_t *)ctrl, PG.fxview, PG.fxvt)) return 0;
+  j = KNOB_REC(PG.fxview, PG.fxvt, 0);
   return j == ID0 + 2 ? 1 : j == ID0 + 8 ? 2 : 0;
 }
+/* um-pages: 1 / 2 the selected U slot's SRC / SMPL page is the screen and has a page 2 (its first knob with a record is
+   one of that page's: 0021's um_which); 0 else */
+static int32_t mach_top(void *ctrl) {
+  int32_t k, j;
+  if (!PG.umb || !listed((const uint8_t *)ctrl, PG.mview, PG.mvt)) return 0;
+  for (k = 0; k < 8; ++k)
+    if ((j = KNOB_REC(PG.mview, PG.mvt, k)) != 0) return PG.umb->which(j);
+  return 0;
+}
 /* the page's title again (sfu_title's push, as page_view_activate does: page_info(selected).name, now PG.ttl) */
-static void retitle(void *view) {
+static void retitle(void *view, const char *t) {   /* (um-pages: t, else the view's own title) */
   uint32_t s = 0;
   char alloc;
-  const char *t = ((title_fn)((const uint32_t *)*(void **)view)[0x4c / 4])(view);
+  if (!t) t = ((title_fn)((const uint32_t *)*(void **)view)[0x4c / 4])(view);
   STR_FROM_C(&s, t, &alloc);
   UI_TITLE(*(void **)((uint8_t *)view + 108), &s);
   STR_DTOR(&s);
@@ -1057,11 +1142,13 @@ static int32_t key_body(void *brain, void *ev) {
   int32_t k = code == K_SRC ? 0 : code == K_SMPL ? 1 : -1, a, f;
   if (!st.init) return 0;
   if (code == K_FUNC) { PG.fdown = (uint8_t)down; return 0; }
+  if (code == K_UP || code == K_DOWN) PG.adown = (uint8_t)(down ? PG.adown | (code - K_UP + 1) : PG.adown & ~(code - K_UP + 1));
   if (k >= 0) {
     if (down) {
       if (PG.kheld >> k & 1) return PG.kdef == code;   /* a repeat: where its press went */
       PG.kheld |= (uint8_t)(1u << k);
-      if (!PG.fdown && !PG.kdef && PG.ontop == k + 1 && PG.npg[k] > 1) {
+      /* (um-pages: a U slot's page too - not after an arrow, so 0026's UP held + SRC stays its source list's) */
+      if (!PG.fdown && !PG.kdef && ((PG.ontop == k + 1 && PG.npg[k] > 1) || (PG.mtop == k + 1 && !PG.adown))) {
         int32_t i;
         for (i = 0; i < 8; ++i) PG.kev[i] = ((const uint32_t *)ev)[i];
         PG.kdef = (uint8_t)code;
@@ -1088,11 +1175,20 @@ static int32_t key_body(void *brain, void *ev) {
     return 1;
   }
   f = PG.kheld & 1 ? 0 : PG.kheld & 2 ? 1 : -1;
+  if (f >= 0 && !PG.fdown && PG.mtop == f + 1) {   /* um-pages: a U slot's SRC / SMPL page 2 (0021 sets its records up) */
+    int32_t r = PG.umb->page(f, code == K_DOWN ? 1 : -1);
+    PG.keat |= (uint8_t)a;
+    if (PG.kdef == (f ? K_SMPL : K_SRC)) PG.kused = 1;
+    PG.mpages++;
+    INVALIDATE(PG.mview);
+    retitle(PG.mview, !f && (r & 1) ? PG.umb->title() : 0);   /* (SRC's header is the machine's name: its page 2's is ours) */
+    return 1;
+  }
   if (f < 0 || PG.ontop != f + 1 || PG.npg[f] < 2 || PG.fdown) return PG.keat & a ? 1 : 0;
   page_set(f, PG.pg[f] + (code == K_DOWN ? 1 : -1));
   PG.keat |= (uint8_t)a;
   if (PG.kdef == (f ? K_SMPL : K_SRC)) PG.kused = 1;
-  if (PG.fxview) { INVALIDATE(PG.fxview); retitle(PG.fxview); }
+  if (PG.fxview) { INVALIDATE(PG.fxview); retitle(PG.fxview, 0); }
   return 1;
 }
 int32_t sfu_key(void *brain, void *ev) {
@@ -1154,6 +1250,11 @@ static void tick_body(void *ctrl) {
     set_look(3, 3, 2);    /* P1 ROUTE: PRE / POST */
     set_look(9, 3, 2);
     relabel();
+    {   /* um-pages: P5..P16's names in the heap (the allocator does not clear) */
+      struct sfu_pn *pn = ((struct sfu_pn *(*)(uint32_t))0x400829d4u)(sizeof(struct sfu_pn));
+      if (pn) for (i = 0; i < (int32_t)sizeof *pn; ++i) ((char *)pn)[i] = 0;
+      PG.pn = pn;
+    }
     ((volatile uint32_t *)0x401b9e54u)[1] = (uint32_t)sfu_sysex;
     ((volatile uint32_t *)0x401b9e54u)[0] = 0x53465855u;   /* 'SFXU' */
     st.init = 1;
@@ -1180,6 +1281,16 @@ static void tick_body(void *ctrl) {
      host (22 ver 3, all of the FX's P5..), when USB lets */
   PG.ctrl = ctrl;
   PG.ontop = (uint8_t)top_page(ctrl);
+  /* um-pages: 0021's box (once), which U slot page is the screen; back on a SRC page 2 (another page left for it), its
+     title again over the machine's name stock put up */
+  if (!PG.umq && XBOX[0] == 0x58535450u) {
+    const struct um_box *b = (const struct um_box *)((int32_t (*)(int32_t))XBOX[1])(UM_Q);
+    PG.umq = 1;
+    if ((uint32_t)b >> 28 == 4 && !((uint32_t)b & 3) && b->magic == UM_Q) PG.umb = b;
+  }
+  g = (uint32_t)mach_top(ctrl);
+  if (g == 1 && PG.mtop != 1 && (PG.umb->page(0, 0) & 1)) { retitle(PG.mview, PG.umb->title()); PG.mtitles++; }
+  PG.mtop = (uint8_t)g;
   if (PG.pv_rx) { PG.pv_rx = 0; *((volatile uint8_t *)ctrl + 0x20) = 1; }
   for (g = 0; g < 2; ++g)
     if (PG.pv_hold[g] && TIMER - PG.pv_hold[g] >= BW_HOLD) PG.pv_hold[g] = 0;

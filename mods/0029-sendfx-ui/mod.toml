@@ -28,7 +28,9 @@ P2..P5 and numbers. The ASK never waits on USB (try-lock). Needs
 BASE / WID, each send FX's return filter, held by the Sidecar (host-link 22 ver 2 both ways,
 records 1..4, never stored in the kit, no locks). Full names in the upper left (51). A user
 effect with P5..P16 gets pages 2 / 3 (SRC / SMPL held + DOWN / UP; held by the Sidecar, 22 ver 3,
-no locks; the page's own records switched while shown). Emulator only. design.md.
+no locks; the page's own records switched while shown). um-pages: a user machine's P17..P32 on SRC / SMPL
+page 2 (52 UM PAGES through 0021, the same held key + DOWN / UP, no locks) and its stepped knobs (one entry a detent,
+the entry's 14-bit word, fine-flagged locks); the SoundParameterSet's +0x2c wrapped too. Emulator only. design.md.
 """
 
 [sources]

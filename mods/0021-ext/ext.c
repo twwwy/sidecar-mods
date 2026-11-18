@@ -1430,13 +1430,69 @@ __attribute__((section(".exty"), noinline)) static void us_text_in(char *dst, co
   dst[i] = 0;
 }
 
-/* The slot (0..4) and knob (0..15) of a parameter record; -1 for another record. Page 2's records
-   belong to the selected track's machine. */
+/* ---- um-pages (2026-11-19): 52 UM PAGES, a user machine's P17..P32 and stepped knobs (the Sidecar's docs/um-pages.md,
+ * sim/protocol.py pg_*). The host describes them per slot after each 1A (HEAD, HI KNOBS, STEPS, PAIR NAMES, all with
+ * the 1A's generation) and holds P17..P32's values per voice (VALUES both ways). Kept here beside the 1A caches, in the
+ * firmware's heap (us_init: a 5 KB um_slot a slot, mostly pair names, and um_ram); written by the MIDI task (um_in),
+ * read by the UI task. SRC / SMPL page 2 (P17..P24 / P25..P32) are the slot's own 8 SRC records, or the shared page-2
+ * records, switched to the hi knobs while the page shows (umr->pg: us_which answers knob 16..31 for them); 0029 pages
+ * them (its ev_key) and answers their values from umr->v through the Sound set's wrappers (um_box below), never from
+ * the kit. design.md "um-pages". */
+struct um_st { uint8_t kind, npair; uint16_t steps, def14; };   /* P1..P16 stepped (steps 0: not) */
+struct um_slot {
+  uint8_t gen, have, nhi, pages, last, seq;   /* have: a HEAD came for 1A generation gen; seq moves with each 52 */
+  char t3[14], t4[14];                        /* page 2 titles ("": default) */
+  struct us_knob hk[16];                      /* P17..P32: hk[p - 17], p 0 none */
+  struct um_st st[16];
+  char pn[16][36][8];                         /* a pair knob's names */
+};
+struct um_ram {
+  struct um_slot *s[US_SLOTS];
+  uint8_t v[8][16], vs[8];                    /* voice V1..V8's P17..P32 and the slot (1..5) they belong to, 0 none */
+  uint16_t tx[8];                             /* bit j: P(17 + j) turned, not sent yet (UI task) */
+  uint32_t hold[8];                           /* TIMER | 1 at the voice's last send: a host value this soon crossed it */
+  uint8_t pg[US_SLOTS], aseq[US_SLOTS], ask[US_SLOTS], rx;   /* pg bit 0 / 1: SRC / SMPL page 2 shown (aseq: set up
+                                                                 for that seq); ask: 52 ASK throttle; rx: redraw */
+  uint32_t sent, got, taken;                  /* VALUES sent, received, taken (tests) */
+  char ttl[24];
+};
+USR struct um_ram *umr;                       /* 0 until us_init (and without heap: the feature off) */
+/* Offsets the emulator tests read (tools/emu/sfu_emu.py t_umpages: sym("umr") + sym("um_off_...")), absolute symbols. */
+_Static_assert(__builtin_offsetof(struct um_ram, v) == 20 && __builtin_offsetof(struct um_ram, vs) == 148 &&
+               __builtin_offsetof(struct um_ram, pg) == 204 && __builtin_offsetof(struct um_ram, sent) == 220 &&
+               __builtin_offsetof(struct um_ram, ttl) == 232 && __builtin_offsetof(struct um_slot, hk) == 34,
+               "um_ram's layout: update the offsets below");
+__asm__(".globl um_off_v\n.set um_off_v, 20\n.globl um_off_vs\n.set um_off_vs, 148\n.globl um_off_pg\n.set um_off_pg, 204\n"
+        ".globl um_off_sent\n.set um_off_sent, 220\n.globl um_off_ttl\n.set um_off_ttl, 232\n");
+#define UM_TIMER (*(volatile uint32_t *)0xfc07000cu)   /* DTCN0 (0029's TIMER) */
+#define UM_HOLD (132000u * 500u)                       /* 500 ms (0029's BW_HOLD) */
+static const uint8_t um_tv[12] USD = {0, 2, 7, 7, 1, 3, 5, 5, 4, 4, 6, 6};   /* track -> voice (0026's mr_voice, 1027) */
+/* slot s's 52 data when it describes the slot's current READY 1A, else 0 */
+US2 static struct um_slot *um_ok(int32_t s) {
+  struct um_slot *m;
+  const struct us_cache *c;
+  if ((uint32_t)s >= US_SLOTS || !umr || !(m = umr->s[s]) || !m->have || !(c = us.c[s]) || c->h.gen != m->gen ||
+      c->h.state != 1)
+    return 0;
+  return m;
+}
+/* slot s's knob k: 0..15 P1..P16 (as 1A gave it), 16..31 P17..P32 (named in HI KNOBS); 0 none */
+US2 static const struct us_knob *us_knob_of(int32_t s, int32_t k) {
+  const struct us_cache *c = us.c[s];
+  const struct um_slot *m;
+  if (k < 16) return c && c->h.gen && c->k[k].p ? &c->k[k] : 0;
+  return (m = um_ok(s)) != 0 && m->hk[k - 16].p && m->hk[k - 16].lng[0] ? &m->hk[k - 16] : 0;
+}
+US2 static int32_t um_on(int32_t s, int32_t b) { return umr && (uint32_t)s < US_SLOTS && (umr->pg[s] & b); }
+
+/* The slot (0..4) and knob (0..15; 16..31 while its page 2 shows) of a parameter record; -1 for another record. Page 2's
+   records belong to the selected track's machine. */
 US1 static int32_t us_which(int32_t r, int32_t *knob) {
   int32_t i, m;
   if (r >= US_REC && r < US_REC + 8 * US_SLOTS) {
-    *knob = (r - US_REC) & 7;
-    return (r - US_REC) >> 3;
+    m = (r - US_REC) >> 3;
+    *knob = ((r - US_REC) & 7) + (um_on(m, 1) ? 16 : 0);
+    return m;
   }
   if (r >= REC_DD && r < REC_DD + 8) {   /* MD's P1..P8 */
     *knob = r - REC_DD;
@@ -1444,8 +1500,8 @@ US1 static int32_t us_which(int32_t r, int32_t *knob) {
   }
   for (i = 0; i < 8; ++i)
     if (us_p2rec[i] == r) {
-      *knob = 8 + i;
       m = MACHINE_OF(US_SEL_TRACK > 11 ? 0 : US_SEL_TRACK) - US_FIRST;
+      *knob = 8 + i + (um_on(m, 2) ? 16 : 0);
       return (uint32_t)m < US_SLOTS || m == MD_S ? m : -1;
     }
   return -1;
@@ -1485,7 +1541,7 @@ US1 int32_t us_text(void *functor, int32_t value, void *str) {
   char t[8];
   const char *nm;
   struct us_cache *c = s >= 0 ? us.c[s] : 0;
-  const struct us_knob *q = c && c->h.gen && c->k[k].p ? &c->k[k] : 0;
+  const struct us_knob *q = c ? us_knob_of(s, k) : 0;
   if (v < 0) v = 0;
   if (v > 127) v = 127;
   if (!q) return STR_PRINTF(str, us_fmt_d, v);
@@ -1537,18 +1593,28 @@ extern const uint8_t us_thunks[];
 /* Record r as slot s's knob k (inv: its value text's invoker, US_INVOKER of its index among the 48): the look's
    descriptor, the value text, the names and the range from the cache (or P<n>, 0..127 with 64) - the OS image runs
    from RAM, as dd_name_knobs' writes show. */
+/* um-pages: k 16..31 sets the record up as P17..P32's knob (page 2 shown); a stepped P1..P16 (52 STEPS) gets the whole
+   range, its def14 as the default and the fine flag (+0x14: locks keep the word's low byte, all 14 bits) - 0029 moves it
+   one entry a detent; every other knob the flag off (no 0021 record has it in the image). */
 US1 static void us_record(int32_t r, int32_t s, int32_t k, uint32_t inv) {
-  struct us_cache *c = us.c[s];
-  const struct us_knob *q = c && c->h.gen && c->k[k].p ? &c->k[k] : 0;
+  const struct us_knob *q = us_knob_of(s, k);
+  const struct um_slot *m = k < 16 ? um_ok(s) : 0;
   uint32_t *rec = (uint32_t *)REC_ADDR(r);
   copy_desc(r, us_look_rec[q ? q->look & 3 : 0]);
   DESC(r)[8] = inv;
-  rec[10] = (uint32_t)(q ? q->lng : us_pn[k]);
+  rec[10] = (uint32_t)(q ? q->lng : us_pn[k & 15]);
   rec[11] = (uint32_t)us_snames[s];
-  rec[12] = (uint32_t)(q ? q->sht : us_pn[k]);
+  rec[12] = (uint32_t)(q ? q->sht : us_pn[k & 15]);
   rec[2] = (uint32_t)(q ? q->min : 0) << 8;
   rec[3] = (uint32_t)(q ? q->max : 127) << 8;
   rec[4] = (uint32_t)(q ? q->def : 64) << 8;
+  rec[5] = 0;
+  if (m && m->st[k].steps) {
+    rec[2] = 0;
+    rec[3] = 0x7f00;
+    rec[4] = (uint32_t)m->st[k].def14 << 1;
+    rec[5] = 1;
+  }
 }
 /* SRC: U(s+1)'s records in the machine page table (0x40287cc8 + 36 m: name, 8 records; machine_page_info
    0x400ff59a, what the SRC view draws and its knobs edit [code, 0x400d3544]): 334 + 8 s + k, or 0 for an unused knob,
@@ -1619,8 +1685,9 @@ US1 int32_t ext_midi_hold(int32_t t) {
 }
 US1 int32_t us_page_record(int32_t m, uint32_t k) {
   struct us_cache *c;
+  const struct us_knob *q;
   void (*h)(int32_t);
-  int32_t j, s = m - US_FIRST;
+  int32_t j, hi, s = m - US_FIRST;
   if ((m == FM_MACHINE || m == MS_MACHINE || (uint32_t)(m - WT_MACHINE) < WT_MACHINES) && (h = US_CUBOX.setup) != 0) {
     us.p2_slot = 0;   /* a user slot's page sets its records up again */
     h(m);
@@ -1635,13 +1702,25 @@ US1 int32_t us_page_record(int32_t m, uint32_t k) {
   if (m == DSPS_MACHINE) return dsps_p2_order[k];
   if (s == MD_S ? !us.c[s] || md_old() : (uint32_t)s >= US_SLOTS || !us_params(s)) return 0;   /* (an old sound: stock's SMPL page) */
   c = us.c[s];
-  if (us.p2_slot != s + 1 || us.p2_gen != c->h.gen) {
-    for (j = 0; j < 8; ++j) us_record(us_p2rec[j], s, 8 + j, US_INVOKER(40 + j));
-    us.p2_slot = (uint8_t)(s + 1);
+  hi = um_on(s, 2) ? 0x80 : 0;   /* um-pages: SMPL page 2 shows P25..P32 on the same records (p2_slot bit 7) */
+  if (us.p2_slot != (s + 1 | hi) || us.p2_gen != c->h.gen) {
+    for (j = 0; j < 8; ++j) us_record(us_p2rec[j], s, (hi ? 24 : 8) + j, US_INVOKER(40 + j));
+    us.p2_slot = (uint8_t)(s + 1 | hi);
     us.p2_gen = c->h.gen;
   }
   if (s == MD_S && !c->h.gen) return k < 3 ? us_p2rec[k] : -1;   /* no Sidecar yet: ENGINE, TYPE, LEV as P9..P11 */
-  return c->k[8 + k].p && c->k[8 + k].lng[0] ? us_p2rec[k] : -1;   /* -1: unused (ext_page_record: record 0) */
+  return (q = us_knob_of(s, (hi ? 24 : 8) + k)) != 0 && q->lng[0] ? us_p2rec[k] : -1;   /* -1: unused (record 0) */
+}
+/* um-pages: slot s's page 2 title (w 0 SRC, 1 SMPL): HEAD's page3 / page4 title, else the page's own with " 2/2" (SRC's is
+   the machine's name, what the stock header shows there; SMPL's the 1A's title or name) */
+static const char um_fmt_t2[] USD = "%s 2/2";
+US2 static const char *um_title(int32_t s, int32_t w) {
+  const struct um_slot *m = umr->s[s];
+  const struct us_cache *c = us.c[s];
+  const char *t = w ? m->t4 : m->t3;
+  if (t[0]) return t;
+  STR_PRINTF(umr->ttl, um_fmt_t2, !w ? us_lnames[s] : c->h.title[0] ? c->h.title : c->h.name);
+  return umr->ttl;
 }
 US1 int32_t us_page_title(int32_t m) {
   int32_t s = m - US_FIRST;
@@ -1650,6 +1729,7 @@ US1 int32_t us_page_title(int32_t m) {
   if (m == DSPS_MACHINE) return (int32_t)dsps_p2_title;
   if (s == MD_S) return md_old() ? 0 : (int32_t)(us_params(s) && us.c[s]->h.title[0] ? us.c[s]->h.title : dd_long);
   if ((uint32_t)s >= US_SLOTS || !us_params(s)) return 0;
+  if (um_on(s, 2)) return (int32_t)um_title(s, 1);   /* um-pages: SMPL page 2 */
   return (int32_t)(us.c[s]->h.title[0] ? us.c[s]->h.title : us.c[s]->h.name);
 }
 US1 int32_t us_param_record(uint32_t index, uint32_t machine) {   /* a sample word, index 17..24 */
@@ -1662,6 +1742,196 @@ US1 int32_t us_param_record(uint32_t index, uint32_t machine) {   /* a sample wo
   if (US_CUBOX.setup && (machine == MS_MACHINE || machine - WT_MACHINE < WT_MACHINES || (machine == FM_MACHINE && j >= 4)))
     return us_p2rec[j];   /* rui1034: WAVETABLE 46, GRANULAR 47 as MULTISAMPLE; rui1051: LIVE IN 48, CHOP 49 */
   return 39 + j;
+}
+
+/* ---- um-pages: what 0029 (the Sound set's wrappers, the page keys) asks, through um_box (ext_steps(UM_Q) gives its
+ * address). UI task only. ---- */
+US2 static int32_t um_sel(int32_t *vo) {   /* the selected track's slot (0..4, -1 none) and voice */
+  int32_t t = US_SEL_TRACK, s;
+  if (t > 11) t = 0;
+  *vo = um_tv[t];
+  s = MACHINE_OF(t) - US_FIRST;
+  return (uint32_t)s < US_SLOTS ? s : -1;
+}
+/* slot s's page w (0 SRC, 1 SMPL) set up as umr->pg says: SRC's 8 records and its machine-table row (record 0 for a P
+   HI KNOBS does not name, as us_src_table does for P1..P8); SMPL's shared records at its next draw (us_page_record) */
+US2 static void um_apply(int32_t s, int32_t w) {
+  int32_t k, r;
+  if (w) {
+    us.p2_slot = 0;
+    return;
+  }
+  if (!(umr->pg[s] & 1)) {
+    us_slot_records(s);
+    return;
+  }
+  for (k = 0; k < 8; ++k) {
+    r = US_REC + 8 * s + k;
+    us_record(r, s, 16 + k, US_INVOKER(8 * s + k));
+    ((int32_t *)0x40287cccu)[9 * (US_FIRST + s) + k] = us_knob_of(s, 16 + k) ? r : 0;
+  }
+}
+/* Page w of the selected track's slot: dir +1 page 2, -1 page 1, 0 nothing. 0: no page 2 there (no 52 HEAD with that
+   page for the slot's 1A; SMPL also needs P9..P16 as knobs), else 0x10 | the page shown (0 / 1). */
+US2 int32_t um_page(int32_t w, int32_t dir) {
+  int32_t vo, s = um_sel(&vo), b = 1 << w;
+  const struct um_slot *m = um_ok(s);
+  if (!m || !(m->pages & b) || (w && !us_params(s))) return 0;
+  if (dir && (dir > 0) != !!(umr->pg[s] & b)) {
+    umr->pg[s] ^= (uint8_t)b;
+    umr->aseq[s] = m->seq;
+    um_apply(s, w);
+  }
+  return 0x10 | !!(umr->pg[s] & b);
+}
+/* record r's page: 1 a SRC record, 2 a SMPL one, of the selected track's slot when that page has a page 2; else 0 */
+US2 int32_t um_which(int32_t r) {
+  int32_t k, vo, s = um_sel(&vo), x = us_which(r, &k);
+  if (s < 0 || x != s) return 0;
+  k = (k & 15) < 8 ? 0 : 1;
+  return um_page(k, 0) ? k + 1 : 0;
+}
+/* a paged record's value, as the set reads it (<< 8): the selected voice's P17..P32 (the knob's default until the host
+   or a turn gave the voice this slot's values); -2 paged without a knob there; -1 not paged */
+US2 int32_t um_get(int32_t r) {
+  int32_t k, vo, s = us_which(r, &k);
+  const struct us_knob *q;
+  if ((uint32_t)s >= US_SLOTS || k < 16) return -1;
+  if (!(q = us_knob_of(s, k))) return -2;
+  um_sel(&vo);
+  return (umr->vs[vo] == s + 1 ? umr->v[vo][k - 16] : q->def) << 8;
+}
+/* a turn on a paged record: the voice's value, clamped to the knob's range, marked to send (um_live); 0 not paged */
+US2 int32_t um_put(int32_t r, int32_t v) {
+  int32_t k, j, vo, s = us_which(r, &k);
+  const struct us_knob *q;
+  struct um_ram *u = umr;
+  if ((uint32_t)s >= US_SLOTS || k < 16) return 0;
+  if (!(q = us_knob_of(s, k))) return 1;
+  um_sel(&vo);
+  if (u->vs[vo] != s + 1) {   /* another machine's values (or none): this one's defaults first */
+    for (j = 0; j < 16; ++j) u->v[vo][j] = u->s[s]->hk[j].p ? u->s[s]->hk[j].def : 0;
+    u->vs[vo] = (uint8_t)(s + 1);
+    u->tx[vo] = 0;
+  }
+  v >>= 8;
+  v = v < q->min ? q->min : v > q->max ? q->max : v;
+  if (u->v[vo][k - 16] != v) {
+    u->v[vo][k - 16] = (uint8_t)v;
+    u->tx[vo] |= (uint16_t)(1u << (k - 16));
+  }
+  return 1;
+}
+/* a stepped P1..P16 record: its steps | pair names' count << 16; 0 not stepped */
+US2 int32_t um_steps(int32_t r) {
+  int32_t k, s = us_which(r, &k);
+  const struct um_slot *m = k < 16 ? um_ok(s) : 0;
+  return m && m->st[k].steps ? m->st[k].steps | (m->st[k].kind ? m->st[k].npair << 16 : 0) : 0;
+}
+/* a stepped record's text for its word w (8.8, the 14 bits: w >> 1): the entry q (kind number, and where the label is
+   while it turns), a pair's "B3 / B12" where the dial was (draw), each name cut until the whole fits 8 characters */
+static const char um_fmt_pair[] USD = "%s / %s";
+US2 int32_t um_text(int32_t r, int32_t w, char *str, int32_t draw) {
+  int32_t k, s = us_which(r, &k), n, q, la, lb;
+  const struct um_slot *m = k < 16 ? um_ok(s) : 0;
+  char a[8], b[8];
+  if (!m || (n = m->st[k].steps) < 2) return STR_PRINTF(str, us_fmt_d, w >> 8);
+  w = (w >> 1) & 0x3fff;
+  q = (w * (n - 1) + 8128) / 16256;
+  if (q > n - 1) q = n - 1;
+  if (!draw || !m->st[k].kind || (n = m->st[k].npair) < 2) return STR_PRINTF(str, us_fmt_d, q);
+  for (la = 0; la < 7 && m->pn[k][q / n][la]; ++la) a[la] = m->pn[k][q / n][la];
+  for (lb = 0; lb < 7 && m->pn[k][q % n][lb]; ++lb) b[lb] = m->pn[k][q % n][lb];
+  while (la + lb > 5) {
+    if (la >= lb) --la;
+    else --lb;
+  }
+  a[la] = b[lb] = 0;
+  return STR_PRINTF(str, um_fmt_pair, a, b);
+}
+US2 const char *um_srctitle(void) {
+  int32_t vo, s = um_sel(&vo);
+  return um_ok(s) ? um_title(s, 0) : us_none;
+}
+#define UM_Q 0x554d5047   /* 'UMPG': ext_steps(UM_Q) answers &um_box (0029 asks once) */
+struct um_box {
+  uint32_t magic;
+  int32_t (*get)(int32_t r), (*put)(int32_t r, int32_t v), (*steps)(int32_t r);
+  int32_t (*text)(int32_t r, int32_t w, char *str, int32_t draw);
+  int32_t (*page)(int32_t w, int32_t dir), (*which)(int32_t r);
+  const char *(*title)(void);
+};
+static const struct um_box um_box USD __attribute__((aligned(4))) = {
+  UM_Q, um_get, um_put, um_steps, um_text, um_page, um_which, um_srctitle};
+
+/* 52 UM PAGES from the host (MIDI task): F0 7D 52 54 52 01 <kind> ... F7; a malformed one is dropped (as decode_pg) */
+US2 static void um_in(const uint8_t *d, int32_t len) {
+  struct um_ram *u = umr;
+  const uint8_t *x = d + 7;
+  int32_t n = len - 8, c, i, j;
+  struct um_slot *m;
+  if (!u || n < 1) return;
+  for (i = 0; i < n; ++i)
+    if (x[i] > 127) return;
+  if (d[6] == 4) {   /* VALUES: a voice's P17..: taken unless one of ours is pending or was sent within UM_HOLD */
+    int32_t vo = x[0], f = x[2] - 17;
+    c = x[3];
+    if (n < 5 || n != 4 + c || vo > 7 || x[1] < 1 || x[1] > US_SLOTS || f < 0 || c < 1 || f + c > 16) return;
+    u->got++;
+    if (u->hold[vo] && UM_TIMER - u->hold[vo] < UM_HOLD) return;
+    if (u->vs[vo] != x[1]) u->tx[vo] = 0;   /* (turns for the voice's old machine are moot) */
+    u->vs[vo] = x[1];
+    for (i = 0; i < c; ++i)
+      if (!(u->tx[vo] >> (f + i) & 1) && u->v[vo][f + i] != x[4 + i]) u->v[vo][f + i] = x[4 + i], u->rx = 1;
+    u->taken++;
+    return;
+  }
+  if (n < 3 || x[0] < 1 || x[0] > US_SLOTS || !(m = u->s[x[0] - 1])) return;
+  if (d[6] == 0) {   /* HEAD: replaces all of it */
+    if (n != 32 || x[2] > 16 || x[3] > 3 || x[5] > 16 || (x[4] && (x[4] < 17 || x[4] > 32))) return;
+    m->have = 0;
+    m->gen = x[1]; m->nhi = x[2]; m->pages = x[3]; m->last = x[4];
+    us_text_in(m->t3, x + 6, 13);
+    us_text_in(m->t4, x + 19, 13);
+    for (i = 0; i < 16; ++i) m->hk[i].p = 0, m->st[i].steps = 0;
+    m->have = 1;
+  } else {
+    if (!m->have || m->gen != x[1]) return;   /* another 1A's (or before its HEAD) */
+    c = x[2];
+    if (d[6] == 1) {   /* HI KNOBS: 1A's knob records, P17..P32 */
+      if (c < 1 || c > 4 || n != 3 + 24 * c) return;
+      for (j = 0; j < c; ++j) {
+        const uint8_t *e = x + 3 + 24 * j;
+        struct us_knob *q;
+        if (e[0] < 17 || e[0] > 32) continue;
+        q = &m->hk[e[0] - 17];
+        q->p = e[0]; q->look = e[1]; q->kind = e[2]; q->role = e[3];
+        q->min = e[4]; q->max = e[5] < e[4] ? e[4] : e[5]; q->def = e[6]; q->ne = e[7] > US_ENUM_MAX ? US_ENUM_MAX : e[7];
+        us_text_in(q->lng, e + 8, 12);
+        us_text_in(q->sht, e + 20, 4);
+      }
+    } else if (d[6] == 2) {   /* STEPS: P1..P16 stepped */
+      if (c < 1 || c > 8 || n != 3 + 7 * c) return;
+      for (j = 0; j < c; ++j) {
+        const uint8_t *e = x + 3 + 7 * j;
+        int32_t st = e[2] << 7 | e[3], d14 = e[4] << 7 | e[5];
+        if (e[0] < 1 || e[0] > 16 || e[1] > 1 || st < 2 || st > 16256 || d14 > 16256 ||
+            (e[1] && (e[6] < 2 || e[6] > 36 || st != e[6] * e[6])))
+          continue;
+        m->st[e[0] - 1].kind = e[1];
+        m->st[e[0] - 1].npair = e[6];
+        m->st[e[0] - 1].def14 = (uint16_t)d14;
+        m->st[e[0] - 1].steps = (uint16_t)st;
+      }
+    } else if (d[6] == 3) {   /* PAIR NAMES: <p> <total> <first> <n> <name 7> x n */
+      int32_t p = x[2] - 1, f = x[4];
+      c = x[5];
+      if (n < 6 || p < 0 || p > 15 || x[3] < 2 || x[3] > 36 || c < 1 || c > 12 || f + c > x[3] || n != 6 + 7 * c) return;
+      for (j = 0; j < c; ++j) us_text_in(m->pn[p][f + j], x + 6 + 7 * j, 7);
+    } else
+      return;
+  }
+  m->seq++;
 }
 
 /* ---- the Teensy's messages (MIDI task, from 0022's router through the 'JUNO' mailbox) ---- */
@@ -1703,7 +1973,7 @@ US2 static void us_list_in(const uint8_t *d, int32_t len) {   /* 1B */
   int32_t s = d[6] - 1, lst = d[7], gen = d[8], p, j, e;
   uint8_t key;
   if (len < 12) return;
-  if (lst < 16) {   /* P(lst+1)'s enum names: into the slot's cache, for its current generation */
+  if (lst < 32) {   /* P(lst+1)'s enum names (um-pages: P17..P32's too): into the slot's cache, for its current generation */
     struct us_cache *c = (uint32_t)s < US_SLOTS ? us.c[s] : (uint32_t)(d[6] - MD_ASK) < 3u ? us.c[MD_S] : 0;
     if (!c || c->h.gen != gen) return;
     for (e = 0; e < 8 && c->eknob[e] != lst; ++e) ;
@@ -1781,7 +2051,8 @@ US2 static void us_slots_in(const uint8_t *d, int32_t len) {   /* 1D */
 US2 int us_sysex(const uint8_t *d, int32_t len) {
   if (d[4] <= 0x17) return jn_sysex(d, len);
   if (len < 8 || d[5] != 1) return 1;
-  if (d[4] == 0x1a) us_meta_in(d, len);
+  if (d[4] == 0x52) um_in(d, len);   /* um-pages (0022's router passes 52 with sfx=1) */
+  else if (d[4] == 0x1a) us_meta_in(d, len);
   else if (d[4] == 0x1b) us_list_in(d, len);
   else if (d[4] == 0x1c) us_knobs_in(d, len);
   else if (d[4] == 0x1d) us_slots_in(d, len);
@@ -1843,6 +2114,15 @@ US2 static void us_init(void) {
   us.wb = wb;
   for (s = 0; s < 8; ++s)
     for (e = 0; e < 3; ++e) md_rec[s][e] = (uint32_t)REC_ADDR(REC_DD + s)[2 + e];
+  {   /* um-pages: the 52 data (a slot without its um_slot: no pages, no steps) */
+    struct um_ram *u = (struct um_ram *)US_NEW(sizeof(struct um_ram));
+    if (u) {
+      us_zero(u, sizeof(struct um_ram));
+      for (s = 0; s < US_SLOTS; ++s)
+        if ((u->s[s] = (struct um_slot *)US_NEW(sizeof(struct um_slot))) != 0) us_zero(u->s[s], sizeof(struct um_slot));
+      umr = u;   /* published last: the MIDI task reads it */
+    }
+  }
   for (s = 0; s <= MD_S; s = s == US_SLOTS - 1 ? MD_S : s + 1) {   /* U1..U5, MD */
     struct us_cache *c = (struct us_cache *)US_NEW(sizeof(struct us_cache));
     if (c) {
@@ -1872,8 +2152,9 @@ US2 static void us_commit(void) {
       us_names(s);
       us.wait[s] = 0;
     }
+    if (umr && s != MD_S) umr->pg[s] = 0;   /* um-pages: a new 1A shows page 1 (its 52s follow) */
     if (s != MD_S || md.mode == 2) us_slot_records(s);   /* (MD's labels only over MD's page, not DIGIDRUM's) */
-    if (us.p2_slot == s + 1) us.p2_slot = 0;   /* page 2 set up again at its next draw */
+    if ((us.p2_slot & 0x7f) == s + 1) us.p2_slot = 0;   /* page 2 set up again at its next draw */
   }
   st->got = 0;
 }
@@ -1931,6 +2212,7 @@ US2 static int32_t us_has_enum(const struct us_cache *c, int32_t k) {
    came yet), each slot at most once in 200 ticks; a READY slot's missing enum lists. */
 US2 void us_tick(void) {
   int32_t s, k;
+  const struct us_knob *q;
   if (!us.done) us_init();
   if (us.st && us.st->got == 0xff) us_commit();
   if (us.wb) us_writeback();
@@ -1953,8 +2235,8 @@ US2 void us_tick(void) {
       return;
     }
     if (!c || c->h.state != 1) continue;
-    for (k = 0; k < 16; ++k)
-      if (c->k[k].p && c->k[k].kind == 2 && c->k[k].ne && !us_has_enum(c, k) && us_has_enum(c, 0xff)) {
+    for (k = 0; k < 32; ++k)   /* (um-pages: P17..P32's lists too, arg P - 1) */
+      if ((q = us_knob_of(s, k)) != 0 && q->kind == 2 && q->ne && !us_has_enum(c, k) && us_has_enum(c, 0xff)) {
         /* (not when the cache's eight lists are taken: us_list_in would drop a ninth) */
         if (us_ask(s + 1, have, 1, k)) {
           us.wait[s] = 50;
@@ -2127,8 +2409,10 @@ US6 static void us_defaults(int32_t t, int32_t s, uint8_t g) {
   uint16_t fp = us.c[s]->h.fp;
   uint32_t sr;
   volatile uint8_t *w;
+  const struct um_slot *um = um_ok(s);
   for (i = 0; i < n; ++i, ++k) {
-    uint8_t v = k->p ? k->def : 64;
+    uint32_t v = (k->p ? k->def : 64) << 8;
+    if (um && um->st[i].steps) v = um->st[i].def14 << 1u;   /* um-pages: a stepped knob's 14-bit default */
     /* each knob word straight into the active kit first (word 9 + i at w + 18 + 2 i: 8.8, the integer byte first;
        byte stores, odd or even with the kit), then as a turn leaves it (the live copy, US_COMMIT queued): a trig
        whose copy of the kit sound lands before the queue drains (stock forces that copy at the first trig since
@@ -2139,11 +2423,11 @@ US6 static void us_defaults(int32_t t, int32_t s, uint8_t g) {
        none then - US_COMMIT's drain still writes them where the record is the track's machine's. */
     US_MASK(sr);
     if ((w = us_kit_sound(t, s, g)) != 0) {
-      w[18 + 2 * i] = v;
-      w[19 + 2 * i] = 0;
+      w[18 + 2 * i] = (uint8_t)(v >> 8);
+      w[19 + 2 * i] = (uint8_t)v;
     }
     US_UNMASK(sr);
-    us_set(t, US_INDEX(i), i < 8 ? US_REC + 8 * s + i : us_p2rec[i - 8], v << 8);
+    us_set(t, US_INDEX(i), i < 8 ? US_REC + 8 * s + i : us_p2rec[i - 8], v);
   }
   /* the kit's two bytes and the live word with interrupts masked (IPL 7): a trig may copy the kit sound to
      0x8000e5b0, and one between the stores would play a half-new tag; nothing - interrupt or task switch - runs
@@ -2591,6 +2875,7 @@ US3 int32_t ext_steps(int32_t r) {
   struct jn_mailbox *q = &jn_mailbox;
   int32_t k, n;
   uint32_t diag;
+  if (r == UM_Q) return (int32_t)&um_box;   /* um-pages: 0029 finds the box here */
   if (r == REC_DD) return md.mode == 1 ? 0x100 | DD_MODELS : 0;   /* DIGIDRUM's ENG on an old sound; MD's P1 is a dial */
   for (k = 0; k < 6; ++k)
     if (ext_step_tab[k][0] == r) {
@@ -2610,7 +2895,8 @@ US6 static int32_t ext_steps_us(int32_t r, int32_t n) {
   const struct us_knob *u;
   s = us_which(r, &k);
   if (s < 0) return US_CUBOX.steps ? US_CUBOX.steps(r) : 0;   /* 0026's records (rui1031), else continuous */
-  if (!(c = us.c[s]) || !c->h.gen || !(u = &c->k[k])->p) return 0;
+  if (!(c = us.c[s]) || !(u = us_knob_of(s, k))) return 0;
+  if (um_steps(r)) return 0x1000;   /* um-pages: a stepped knob (52 STEPS), one entry a detent, 0029 */
   if (u->kind == 2) {   /* enum: equal zones */
     for (e = 0; e < 8 && c->eknob[e] != k; ++e) ;
     return e < 8 && c->ecount[e] > 1 ? 0x100 | c->ecount[e] : 0;
@@ -3061,6 +3347,51 @@ US4 static int32_t md_list_open(const uint8_t *ctrl) {
     if (n[2] && *(const uint32_t *)n[2] == 0x401e5bf4u) return 1;
   return 0;
 }
+/* um-pages, each UI loop pass (us_live, 20 Hz): a turned voice's P17..P(last) to the host (52 VALUES, all of them, the
+   voice's slot; never waits on USB: next pass), a slot whose 52s no longer match its 1A (a new 1A, a HEAD without that
+   page) back on page 1, one whose 52s moved set up again; for the selected track's READY slot without a HEAD for its 1A
+   a 52 ASK every 10 s. 1: the views redraw (a host value, a page set up again). */
+US2 static int32_t um_live(struct um_ram *u) {
+  int32_t vo, s, n, r = 0;
+  const struct um_slot *m;
+  uint8_t b[28];
+  for (vo = 0; vo < 8; ++vo) {
+    if (u->hold[vo] && UM_TIMER - u->hold[vo] >= UM_HOLD) u->hold[vo] = 0;   /* (DTCN0 wraps: 0029's bwwrap) */
+    if (!u->tx[vo]) continue;
+    s = u->vs[vo] - 1;
+    if (!(m = um_ok(s)) || (n = m->last - 16) < 1) {
+      u->tx[vo] = 0;
+      continue;
+    }
+    b[0] = 0xf0; b[1] = 0x7d; b[2] = 0x52; b[3] = 0x54; b[4] = 0x52; b[5] = 1; b[6] = 4;
+    b[7] = (uint8_t)vo; b[8] = (uint8_t)(s + 1); b[9] = 17; b[10] = (uint8_t)n;
+    us_copy(b + 11, u->v[vo], n);
+    b[11 + n] = 0xf7;
+    if (!us_send(b, 12 + n)) break;
+    u->tx[vo] = 0;
+    u->hold[vo] = UM_TIMER | 1u;
+    u->sent++;
+  }
+  for (s = 0; s < US_SLOTS; ++s) {
+    if (u->ask[s]) --u->ask[s];
+    if (!u->pg[s]) continue;
+    m = um_ok(s);
+    if (!m || (u->pg[s] & ~m->pages) || u->aseq[s] != m->seq) {
+      if (!m) u->pg[s] = 0;
+      else u->pg[s] &= m->pages, u->aseq[s] = m->seq;
+      um_apply(s, 0);
+      um_apply(s, 1);
+      r = 1;
+    }
+  }
+  s = um_sel(&vo);
+  if (s >= 0 && !u->ask[s] && us.c[s] && us.c[s]->h.gen && us.c[s]->h.state == 1 && !um_ok(s)) {
+    b[0] = 0xf0; b[1] = 0x7d; b[2] = 0x52; b[3] = 0x54; b[4] = 0x52; b[5] = 1; b[6] = 5; b[7] = (uint8_t)(s + 1); b[8] = 0xf7;
+    if (us_send(b, 9)) u->ask[s] = 200;
+  }
+  if (u->rx) u->rx = 0, r = 1;
+  return r;
+}
 US4 int32_t us_live(void *ctrl) {
   struct us_ram *u = &us;
   int32_t r = 0;
@@ -3073,6 +3404,7 @@ US4 int32_t us_live(void *ctrl) {
   }
   us_live_ask(u);
   md_tick(u);
+  if (umr && um_live(umr)) r = 1;
   return r;
 }
 /* ext_stepbox (0x4001a23c: 'XSTP', ext_steps, us_live): registry patches at the fixed address, the two pointers ptr sites */

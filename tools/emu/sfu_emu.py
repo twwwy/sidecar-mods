@@ -351,9 +351,11 @@ def t_fullnames(e):
             str(long_names(e, s, 0)))
 
 # ---- sendfx-pages (issue #15): struct sfu_p (sfu.c; offsets from m68k-elf-gcc offsetof)
-PG_PG, PG_NPG, PG_NX, PG_PV, PG_ONTOP, PG_KDEF = 4240, 4242, 4244, 4246, 4275, 4276
-PG_CNT = 4290                      # pv_sent pv_got steps replays defers retitles
-PG_TTL = 4706
+# (um-pages: xsh / xlng moved to the heap behind sfu_p's first word, so every offset below is 4220 B lower than #15's)
+PG_PG, PG_NPG, PG_NX, PG_PV, PG_ONTOP, PG_KDEF = 20, 22, 24, 26, 55, 56
+PG_CNT = 70                        # pv_sent pv_got steps replays defers retitles
+PG_TTL = 486
+PG_UMB, PG_MTOP, PG_MVIEW, PG_MCNT = 522, 527, 530, 538   # um-pages: umb, mtop, mview, then mpages msteps mdeltas mtitles
 FX16 = 66                          # UFX3 holding a user effect with P1..P16 (the Sidecar's api3_fx16)
 
 
@@ -473,6 +475,198 @@ def t_xpages(e):
     g = pg_state(e, s)
     U.check("xpages: CHORUS (P1..P4): one page, SRC never held back, no paging",
             g["npg"][0] == 1 and g["pg"][0] == 0 and g["cnt"][4] == 0, str(g))
+
+
+# ---- um-pages (2026-11-19): a user machine's SRC / SMPL page 2 (P17..P32) and stepped knobs, 52 UM PAGES (the Sidecar's
+# docs/um-pages.md). The test machine is the Sidecar's pagesprobe's shape: U1 with P1..P16 (page 2 knobs), P17..P32 but P31,
+# P4 a 19 x 19 pair (361 entries), P5 a stepped number (100 entries).
+UM_LO = [dict(p=p, long=f"Lo{p}", short=f"L{p}") for p in range(1, 17)]
+UM_HI = [dict(p=p, long=f"High {p}", short=f"H{p}", default=p) for p in range(17, 33) if p != 31]
+UM_HI[1] = dict(p=18, look="list", kind="enum", enum_count=3, long="High 18", short="H18", default=18)   # a list knob
+UM_NAMES = [f"N{i}" for i in range(1, 20)]
+UM_STEPS = [(4, 1, 361, None, 19), (5, 0, 100, None, 0)]   # (p, kind, steps, def14 = entry 20 / 50, pair names)
+UM_DEF = {4: 20, 5: 50}
+UM_P2REC = [438, 457, 458, 459, 460, 403, 404, 405]      # 0021's shared page-2 records (P9..P16, P25..P32)
+UM_KIT = 0x41255933                                     # kit 0, BD's word 9 (P1); P k at + 2 (k - 1)
+UM_TABLE = 0x40287ccc + 36 * 35                         # U1's SRC row in the machine page table (8 records)
+
+
+def um_msgs(gen=7, hi=UM_HI, steps=True, head=True):
+    """U1's 1A (READY, page 2 knobs) and the 52s the Sidecar sends after it (HEAD, HI KNOBS, STEPS, PAIR NAMES), then a
+    1D naming that generation (the Rytm then asks for the list knobs' names)."""
+    P_ = P
+    out = P_.meta_messages(1, gen, P_.ST_READY, P_.FLAG_PARAMS, "PG TEST", "PGT", "PG PAGE 2", UM_LO)
+    if not head:
+        return b"".join(out + [P_.slots([gen, 0, 0, 0, 0], 0)])
+    st = [(p, k, n, P_.step_v14(n, UM_DEF[p]), np) for p, k, n, _, np in UM_STEPS] if steps else []
+    out.append(P_.pg_head(1, gen, hi, len(st)))
+    for c in range(0, len(hi), 4):
+        out.append(P_.pg_knobs(1, gen, hi[c:c + 4]))
+    if st:
+        out.append(P_.pg_steps(1, gen, st))
+        out += [P_.pg_pair(1, gen, 4, UM_NAMES, 0), P_.pg_pair(1, gen, 4, UM_NAMES, 12)]
+    return b"".join(out + [P_.slots([gen, 0, 0, 0, 0], 0)])
+
+
+def um_go(msgs=None, values=True):
+    """Events: the 1A and 52s, U1 chosen on BD in the machine list (its SRC page shows), the host's VALUES for V1
+    (P17..P32 = 100..115); -> (events, the clock after them)."""
+    ev, t = U.meta_events(100, [[msgs or um_msgs()]])
+    ev2, t2 = U.walk_list(t + 200, U.UI["downs"]["u1"])
+    ev += ev2
+    if values:
+        ev.append((t2 + 50, "usb", P.pg_values(0, 1, 17, [100 + i for i in range(16)])))
+    return ev, t2
+
+
+def um_state(e, s):
+    a, u = sym(e, "sfu_p"), e.u32(s, U.sym("umr"))
+    return dict(mtop=e.peek(s, a + PG_MTOP, 1)[0], cnt=[e.u32(s, a + PG_MCNT + 4 * i) for i in range(4)],
+                pkey=[e.u32(s, a + PG_CNT + 4 * i) for i in (3, 4)],   # replays, defers
+                v=list(e.peek(s, u + U.sym("um_off_v"), 16)), vs=e.peek(s, u + U.sym("um_off_vs"), 1)[0],
+                pg=e.peek(s, u + U.sym("um_off_pg"), 1)[0], io=[e.u32(s, u + U.sym("um_off_sent") + 4 * i) for i in range(3)],
+                ttl=e.cstr(s, u + U.sym("um_off_ttl"), 24))
+
+
+def um_words(e, s, n=16):
+    return [w16(e, s, UM_KIT + 2 * k) for k in range(n)]
+
+
+def um_vals(e):
+    """The Rytm's 52 VALUES in the last run, decoded."""
+    return [P.decode_pg(m[5:-1]) for m in e.sent if len(m) > 7 and m[4] == P.UM_PAGES and m[6] == P.PG_VALUES]
+
+
+def t_umpages(e):
+    """um-pages: a user machine's P17..P32 on SRC / SMPL page 2 (SRC / SMPL held + DOWN / UP; HEAD's pages, HI KNOBS'
+    names, the host's values, turns out as 52 VALUES, no kit word, no lock), and stepped P1..P16 (52 STEPS: one entry a
+    detent, the entry's exact 14-bit word, both ends, FUNC one, pushed a row, the pair's text, a saved lock's 14 bits).
+    Screens: um-src2.png, um-smpl2.png, um-step.png."""
+    ka = U.UI["knob_enc"]
+    go, t = um_go()
+    s0 = e.run("um-base", t + 100, go, save=True)
+    w0 = um_words(e, s0)
+    g = um_state(e, s0)
+    st = [(e.u32(s0, REC(r) + 8), e.u32(s0, REC(r) + 12), e.u32(s0, REC(r) + 16), e.u32(s0, REC(r) + 20)) for r in (337, 338, 336)]
+    U.check("umpages: chosen with its 52s: P4 / P5 start at their def14 words (2 x v14 of entries 20 / 50), records 337 / 338 "
+            "stepped (range 0..0x7f00, the def14 word as default, fine flag), P3 not", w0[3] == 2 * P.step_v14(361, 20) and
+            w0[4] == 2 * P.step_v14(100, 50) and st[0] == (0, 0x7f00, w0[3], 1) and st[1] == (0, 0x7f00, w0[4], 1) and st[2][3] == 0,
+            f"words {w0[3]} {w0[4]} recs {st}")
+    U.check("umpages: the host's VALUES for V1 taken (P17..P32 = 100..115)", g["v"] == list(range(100, 116)) and g["vs"] == 1,
+            str(g))
+    a18 = [a for a in e.asks() if a and a["slot"] == 1 and a["what"] == 1]
+    U.check("umpages: P18 (a list knob of HI KNOBS): its names asked as P1..P16's, 19 ASK what 1 arg P - 1 = 17",
+            any(a["arg"] == 17 for a in a18), str(a18))
+    # SRC held + DOWN: SRC page 2, a turn of C (P19)
+    ev = go + [(t + 150, "press", "SRC:300M"), (t + 250, "press", "DOWN"), (t + 500, "turn", (f"{ka['C']}:+8", 3, 10))]
+    s = e.run("um-src2", t + 800, ev, save=True)
+    g = um_state(e, s)
+    nm = rec_names(e, s, range(334, 342))
+    tab = [e.u32(s, UM_TABLE + 4 * k) for k in range(8)]
+    U.check("umpages: SRC held + DOWN on U1's SRC page = page 2 (title PG TEST 2/2), SRC not given to stock",
+            g["pg"] == 1 and g["mtop"] == 1 and g["cnt"][0] == 1 and g["pkey"] == [0, 1] and g["ttl"] == "PG TEST 2/2", str(g))
+    U.check("umpages: page 2's knobs A..H are P17..P24 (H17..H24, the upper left High 17..), the row's records 334..341",
+            [n[0] for n in nm] == [f"H{p}" for p in range(17, 25)] and nm[0][1] == "High 17" and tab == list(range(334, 342)),
+            f"{nm} {tab}")
+    vals = um_vals(e)
+    U.check("umpages: knob C turned P19 up from the host's 102; the turn went out as 52 VALUES (V1, U1, P17..P32)",
+            g["v"][2] > 102 and bool(vals) and vals[-1] and vals[-1]["voice"] == 0 and vals[-1]["slot"] == 1 and
+            vals[-1]["first"] == 17 and vals[-1]["values"] == g["v"], f"{g['v']} sent {vals[-1:]}")
+    U.check("umpages: the kit's sound words P1..P16 untouched by page 2", um_words(e, s) == w0, f"{um_words(e, s)} / {w0}")
+    # a trig held on page 2: no lock, nothing sent
+    ev = go + [(t + 100, "press", "RECORD"), (t + 200, "press", "T1"), (t + 300, "press", "SRC:300M"), (t + 400, "press", "DOWN"),
+               (t + 700, "press", "T1:400M"), (t + 800, "turn", (f"{ka['A']}:+20", 3, 20)), (t + 1200, "press", "RECORD")]
+    s = e.run("um-lock", t + 1400, ev, save=True)
+    g = um_state(e, s)
+    U.check("umpages: a trig held on page 2 locks nothing (words 9..24), sends nothing, the kit is unchanged",
+            g["pg"] == 1 and all(lock(e, s, 0, 0, i) == 0xffff for i in range(9, 25)) and not um_vals(e) and
+            um_words(e, s) == w0, f"pg {g['pg']} sent {um_vals(e)} locks " +
+            " ".join(f"{lock(e, s, 0, 0, i):04x}" for i in range(9, 25)))
+    # the host's values while page 2 shows; then UP: page 1 again
+    ev = go + [(t + 150, "press", "SRC:300M"), (t + 250, "press", "DOWN"), (t + 500, "usb", P.pg_values(0, 1, 21, [1, 2, 3, 4])),
+               (t + 650, "press", "SRC:300M"), (t + 750, "press", "UP")]
+    s = e.run("um-up", t + 950, ev, save=True)
+    g = um_state(e, s)
+    nm = rec_names(e, s, range(334, 342))
+    U.check("umpages: a host VALUES (P21..P24) while page 2 shows is taken", g["v"][4:8] == [1, 2, 3, 4] and g["io"][2] >= 2,
+            str(g))
+    U.check("umpages: SRC held + UP = page 1: L1..L8 and the row 334..341 back", g["pg"] == 0 and
+            [n[0] for n in nm] == [f"L{p}" for p in range(1, 9)] and [e.u32(s, UM_TABLE + 4 * k) for k in range(8)] ==
+            list(range(334, 342)), f"{g} {nm}")
+    # SRC tapped on the SRC page: held back, given to stock at the release - SRC SRC opens the machine list as on stock
+    # (us_ui.json list_open; DOWN YES: U2)
+    ev = go + [(t + 150, "press", "SRC"), (t + 250, "press", "SRC"), (t + 400, "press", "DOWN"), (t + 500, "press", "YES")]
+    s = e.run("um-tap", t + 750, ev, save=True)
+    g = um_state(e, s)
+    U.check("umpages: SRC tapped on U1's SRC page is held back and given to stock: SRC SRC opens the machine list (DOWN "
+            "YES: U2)", g["pkey"] == [2, 2] and e.peek(s, 0x8000ea00, 1)[0] == 36, f"{g['pkey']} machine {e.peek(s, 0x8000ea00, 1)[0]}")
+    # SMPL page 2: P25..P32 on the shared records, P31 empty
+    ev = go + [(t + 100, "press", "SMPL"), (t + 250, "press", "SMPL:300M"), (t + 350, "press", "DOWN")]
+    s = e.run("um-smpl2", t + 450, ev, save=True)
+    g = um_state(e, s)
+    nm = rec_names(e, s, UM_P2REC)
+    U.check("umpages: SMPL held + DOWN on U1's SMPL page = page 2 (PG PAGE 2 2/2): H25..H30, H32 on the shared records",
+            g["pg"] == 2 and g["mtop"] == 2 and g["ttl"] == "PG PAGE 2 2/2" and
+            [n[0] for i, n in enumerate(nm) if i != 6] == ["H25", "H26", "H27", "H28", "H29", "H30", "H32"], f"{g} {nm}")
+    # a machine without P17..P32 (HEAD nhi 0): no paging, SRC SRC opens the list at once
+    ev, t2 = um_go(um_msgs(hi=[], steps=False), values=False)
+    ev += [(t2 + 150, "press", "SRC:300M"), (t2 + 250, "press", "DOWN")]
+    s = e.run("um-nopages", t2 + 450, ev, save=True)
+    g = um_state(e, s)
+    U.check("umpages: a machine whose HEAD has no P17..P32: SRC never held back, no page 2", g["pg"] == 0 and g["mtop"] == 0
+            and g["cnt"][0] == 0 and g["pkey"] == [0, 0], str(g))
+    # no 52 for the slot's 1A (an older Sidecar, a lost HEAD): the Rytm asks, 52 ASK <slot>
+    ev, t2 = um_go(um_msgs(head=False), values=False)
+    s = e.run("um-ask", t2 + 200, ev, save=True)
+    asks = [m for m in e.sent if len(m) == 9 and m[4] == P.UM_PAGES and m[6] == P.PG_ASK]
+    U.check("umpages: a READY slot without its 52 HEAD: 52 ASK for it", bool(asks) and P.decode_pg(asks[-1][5:-1]) ==
+            dict(kind="ask", slot=1), str([m.hex() for m in asks]))
+    # a built-in machine (the base's BD): nothing held back, no paging
+    s = e.run("um-builtin", 400, [(50, "usb", um_msgs()), (150, "press", "SRC:300M"), (250, "press", "DOWN")], save=True)
+    g = um_state(e, s)
+    U.check("umpages: a built-in machine's SRC page: nothing held back, no paging", g["mtop"] == 0 and g["cnt"][0] == 0 and
+            g["pkey"] == [0, 0] and e.peek(s, 0x8000ea00, 1)[0] < 35, str(g))
+    # stepped: P4 (pair) one detent; P5 (number) to both ends; FUNC one entry; pushed a row
+    ev = go + [(t + 150, "turn", (f"{ka['D']}:+8", 3, 60)), (t + 400, "press", "BD")]
+    s = e.run("um-step", t + 500, ev, save=True)
+    w = um_words(e, s)
+    rep = [m for m in e.sent if len(m) > 11 and m[4] == 0x04 and m[5] & 7 == 0]   # 0021's trig report, V1 (BD)
+    p4 = (rep[-1][8 + 2 * 3] << 7 | rep[-1][9 + 2 * 3]) if rep else -1
+    U.check("umpages: P4 turned one detent: the next entry's exact word (2 x v14(21)), reported to the host as v14(21)",
+            w[3] == 2 * P.step_v14(361, 21) and p4 == P.step_v14(361, 21) and P.step_entry(361, p4) == 21,
+            f"word {w[3]} report {p4}")
+    print(f"    P4 reads {P.pair_text(UM_NAMES, 21)!r} (entry 21): look at build/emu/{e.tag}/um-step.png, knob D")
+    ev = go + [(t + 150, "turn", (f"{ka['E']}:+20", 40, 4))]
+    s = e.run("um-end", t + 450, ev, save=True)
+    hi = um_words(e, s)[4]
+    ev = go + [(t + 150, "turn", (f"{ka['E']}:-20", 60, 4))]
+    s = e.run("um-zero", t + 550, ev, save=True)
+    lo = um_words(e, s)[4]
+    U.check("umpages: P5 (100 entries) stops at both ends: entry 99's word 0x7f00, entry 0's 0", hi == 0x7f00 and lo == 0,
+            f"{hi:04x} {lo:04x}")
+    s = e.run("um-func", t + 700, go + [(t + 150, "press", "FUNC:500M"), (t + 200, "turn", (f"{ka['E']}:-8", 6, 60))], save=True)
+    w, nst = um_words(e, s), um_state(e, s)["cnt"][1]
+    s = e.run("um-push", t + 500, go + [(t + 150, "press", "PUSH_D:300M"), (t + 200, "turn", (f"{ka['D']}:+8", 2, 100))],
+              save=True)
+    w2 = um_words(e, s)
+    q5 = P.step_entry(100, w[4] >> 1)
+    U.check("umpages: FUNC held moves P5 one entry a step (down from 50, an entry's exact word); pushed, P4 moves a row of "
+            "its pair (20 + 19 = 39)", nst >= 1 and q5 == 50 - nst and w[4] == 2 * P.step_v14(100, q5) and
+            w2[3] == 2 * P.step_v14(361, 39), f"P5 entry {q5} after {nst} steps, P4 entry {P.step_entry(361, w2[3] >> 1)}")
+    # a lock on the stepped P4 keeps all 14 bits, also over power-off and a cold boot
+    ev = go + [(t + 100, "press", "RECORD"), (t + 200, "press", "T1"), (t + 300, "press", "T5"),
+               (t + 500, "press", "T1:600M"), (t + 600, "turn", (f"{ka['D']}:+8", 12, 10)), (t + 1200, "press", "RECORD")]
+    c = U.card_copy(e, "umlock")
+    s = e.run("um-steplock", t + 1400, ev, save=True, card=c)
+    l4 = lock(e, s, 0, 0, 12)
+    U.check("umpages: a lock on P4 (trig held) lands on an entry's exact word (its fraction kept, the fine flag set), the "
+            "base word and step 5 untouched", l4 != 0xffff and l4 & 0xfe and l4 == 2 * P.step_v14(361, P.step_entry(361, l4 >> 1))
+            and P.step_entry(361, l4 >> 1) > 20 and fine(e, s, 0, 12) == 1 and um_words(e, s)[3] == w0[3] and
+            lock(e, s, 0, 4, 12) == 0xffff, f"lock {l4:04x} fine {fine(e, s, 0, 12)} base {um_words(e, s)[3]}")
+    e.run("um-steplock-off", 300, snap=s, start=e.clock + t + 1400, card=c, extra=["--power-off", f"{e.clock + t + 1500}M"])
+    s1 = e.run("um-steplock-boot", 4400, X.DIALOGS, cold=True, card=c, save=True)
+    U.check("umpages: power-off and cold boot - the P4 lock back with all 14 bits", lock(e, s1, 0, 0, 12) == l4,
+            f"{lock(e, s1, 0, 0, 12):04x} / {l4:04x}")
 
 
 X_TIME = 1124 + DL   # ui_sum ui_max ui_n mt_sum mt_max mt_n (DTCN0 counts)
@@ -917,7 +1111,7 @@ def t_fmname(e):
           glyphs(rows, 76, 100, 6, 100) is not None, "")
 
 
-TESTS = {"fmname": t_fmname, "enum": t_enum, "typelist": t_typelist, "enumlock": t_enumlock, "enumkit": t_enumkit, "ext": t_ext,
+TESTS = {"umpages": t_umpages, "fmname": t_fmname, "enum": t_enum, "typelist": t_typelist, "enumlock": t_enumlock, "enumkit": t_enumkit, "ext": t_ext,
          "labels": t_labels, "fullnames": t_fullnames, "xpages": t_xpages, "cost": t_cost, "bw": t_bw, "bw2": t_bw2, "bwwrap": t_bwwrap, "pages": t_pages, "names": t_names, "locks": t_locks, "save": t_save, "stock": t_stock, "kits": t_kits}
 
 

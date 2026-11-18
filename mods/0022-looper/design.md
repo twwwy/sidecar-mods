@@ -96,3 +96,9 @@ live again after the pad stops the loop on the bar ~1100 (host gain x21).
 - Screen feedback (popup); the page number is only reported to the host.
 - The loop's level on a real Rytm (the host's gain is set from the emulator).
 - Release of TRK while REC is held; FUNC combinations.
+
+## um-pages (2026-11-19): 52 to 0021
+
+With `sfx=1` the router also passes **52 UM PAGES** (the Sidecar's docs/um-pages.md: a user machine's P17..P32 and stepped
+knobs) to 0021's 'JUNO' mailbox, as it passes 1A..1D. Only sfx builds (the feature needs 0029); the other routers are
+unchanged byte for byte. 0029 design.md section 14.

@@ -559,3 +559,127 @@ A user effect (API 3) can have P1..P16; SEND FX showed P1..P4 only (as P2..P5). 
   come back after a kit change and a Sidecar reboot, SEND FX 2 the same, 0026's UP combos as before. One step to
   know: an effect replaced on the card is reloaded only by `um=fx:<n>:<id>` again (until then the old one, here
   with 4 controls, plays and the Rytm shows one page).
+
+## 14. um-pages (2026-11-19): a user machine's P17..P32 on SRC / SMPL page 2, and stepped knobs
+
+The Sidecar's `docs/um-pages.md` (branch `feat/um-pages`): a user machine (U1..U5, 0021's slots) may have P17..P32 and
+stepped P1..P16 knobs, described by **52 UM PAGES** after each 1A. The same mechanism as #15 (section 13), applied to the
+SRC / SMPL machine pages; generic, any user machine. The data side is 0021's (its design.md "um-pages"): the 52s, the
+per-voice values, the records' set-up for page 2, the titles. 0029 does the UI side (the Sound set's wrappers, the keys,
+the screen check), reaching 0021 through `um_box` (`ext_steps(UM_Q)` gives its address, 'UMPG' its magic; no box: nothing
+changes).
+
+### What the user sees
+
+| on a U slot track whose 52 HEAD has | keys | page | title |
+|---|---|---|---|
+| a knob in P17..P24 (pages bit 0) | **SRC held + DOWN** / **+ UP** | SRC page 2: A..H = P17..P24 | `page3_title`, else `<machine name> 2/2` |
+| a knob in P25..P32 (bit 1), P9..P16 as knobs | **SMPL held + DOWN** / **+ UP** | SMPL page 2: A..H = P25..P32 | `page4_title`, else `<SMPL title> 2/2` |
+
+No cycling (DOWN on page 2 stays, UP on page 1 stays), no FUNC (FUNC held: stock's). Page 1's title is unchanged. A knob
+HI KNOBS does not name draws as stock's empty box (record 0) and turns nothing. Each knob shows its HI KNOBS record: the
+short name as the label, the long name in the upper left while it turns, look / kind / range as on page 1 (a list: its 1B
+names, asked as `19 ASK what 1 arg P - 1` = 16..31). The values are the Sidecar's per voice: never the kit's words, no
+p-lock (a held trig makes no lock and sends nothing), not in a kit copy. A turn goes out as `52 VALUES` (the voice, its
+slot, P17..P(last), all of them) from the next UI pass, never waiting on USB; the host's VALUES land unless a turn of that
+P is pending or the voice sent one within 500 ms (the crossing rule of section 11). SRC / SMPL tapped alone on such a page
+is held back and given to stock at its release (SRC: the machine list, as before; SMPL: its page cycle); a track on a
+built-in machine, or a slot whose HEAD has no P17..P32 (or no HEAD: an older Sidecar), holds nothing back. The page is per
+slot: it stays when the page or the track is left and comes back on a track of that slot; a new 1A, or a HEAD without
+that page, puts it back to page 1.
+
+**Stepped knobs** (52 STEPS: P1..P16, `steps` 2..16256, kind number or a pair of `n` names, `steps = n x n`): still the
+kit's sound word, p-lockable; 0021 gives the record the whole range 0..0x7f00, `def14` (the word 2 x def14) as its default
+and **the fine flag** (+0x14), so a lock keeps the word's low byte. 0029 gives it the stock enum look (FILTER TYPE's encoder
+profile: no acceleration, a hold-off between steps) with the text drawn where the dial was:
+
+- **one detent = one entry**: from the word's v14 (word >> 1), `q = min((v14 x (steps - 1) + 8128) / 16256, steps - 1)`,
+  `q' = clamp(q +- detents, 0, steps - 1)`, the word written is exactly `2 x v14(q')`,
+  `v14(q) = (q x 16256 + (steps - 1) / 2) / (steps - 1)` (the plugin reads q' back, `sim/protocol.py step_detent`). Both
+  ends stop.
+- **FUNC held**: one entry (the spec's fine). **Pushed** (the enum profile's x4): a pair moves one row (`n` entries: the
+  first name changes, the second stays), a number four entries. The spec is silent on push; this is this build's choice.
+- **Text**: kind number, the entry q (0-based, as the Sidecar's VOICE page); kind pair, `names[q / n] + " / " + names[q % n]`
+  where the dial was, each name shortened until the whole fits 8 characters (the " / " kept); where the label is while it
+  turns, the entry number (so the names are not on the screen twice: fix-1020's rule).
+- **Locks** (a trig held): the lock moves one entry a detent from the step's lock (or the base) and stores the entry's
+  word, fine flag set: all 14 bits, kept by save, power-off and a cold boot [measured].
+- **MIDI in**: NRPN (the record's 1:0..7 for P1..P8) sets both bytes, MSB and LSB (the word = MSB << 8 | LSB << 1, all 14
+  bits; the plugin reads the entry `q(v14)`, not snapped to an entry's exact word); CC 16..23 sets the MSB with a zero
+  fraction (128 positions spread over the entries) [measured, rytm-emu: NRPN 1:3 = 10 / 69 -> word 0x0a8a, CC 20 = 33 ->
+  0x2100]. MIDI out (GLOBAL parameter output) is stock's from the word: NRPN carries MSB and LSB; not measured.
+- The 1A's choice defaults (machine list YES etc.) write `def14` for a stepped knob (0021 us_defaults).
+
+### How
+
+- **The knob's turn**: the SoundParameterSet's vtable +0x2c (the dispatch of `param_apply_delta`: set, id, delta, track,
+  FUNC, out flag; stock 0x400a95dc reads the value, adds the delta, clamps and calls `param_set_value`) is wrapped too
+  (`sfu_s_delta`, a new `ptr` patch at 0x401dcba0; 1.74's hash in re/os/1.74.toml). A **paged** record takes the turn there:
+  read + delta, the record's range, the write wrapper (0021 keeps the value, marks it to send) - stock's set path is never
+  run, so no kit word, no CC out. A **stepped** record goes on to stock's with the delta to the next entry's word. A turn
+  with a trig held goes the lock path (view +0x74 -> set +0x40, measured): `sfu_s_lset` refuses a paged record and moves
+  a stepped one by entries as above.
+- **Paged records**: 0021 switches the visible page's own 8 records (SRC: U(s+1)'s 334 + 8 s + k and its machine-table
+  row; SMPL: the shared page-2 records) to P17..P32 while the page shows (`us_which` answers knob 16..31 for them). 0029's
+  Sound set wrappers take `um_get` first: read = the voice's value (`<< 8`; then a list's zone as for P1..P16), write ->
+  `um_put`, lock-get -1, lock-set refused. The voice is the selected track's (0026's track -> voice table).
+- **Which page is the screen** (`mach_top`, each tick): the view a U slot's record was last read through (`sfu_get`, now
+  also for every record `um_which` names: 0021 says it is a SRC / SMPL record of the selected track's slot with that page 2)
+  is the screen (#15's `listed`, the view list walk), and its first knob with a record is one of that page's. The SRC
+  page's header is the machine's name, not the view's page name, so 0029 pushes the page-2 title itself (`retitle` with
+  0021's `um_srctitle`) at the page change and again when the SRC page comes back on page 2; SMPL's comes through
+  `ext_page_title` (0021).
+- **Keys** (`sfu_key`, ev_key order 5 as #15): SRC / SMPL's press is held back when `mtop` says that page is on screen with
+  a page 2; an arrow with it held calls `um_page` (0021 sets the records up), invalidates the view and retitles.
+- **RAM** (the full set was 4232 B from full): #15's P5..P16 names (`sfu_p.xsh / xlng`, 4220 B) moved to the firmware's heap
+  (allocated at the first ev_tick, before the mailbox opens; `sfu_p.pn`), so every field of `sfu_p` after it is 4220 B lower
+  (tools/emu/sfu_emu.py `PG_*`); the 52 data are 0021's, in the heap too (26 KB). The area's code and data grew by 5.5 kB
+  (0021 and 0029 together; `.bss` 4.2 kB smaller): the full set (`sfpm1`) leaves **2920 B** of elekloader RAM (4232 B on
+  `sfpbase`, unchanged #15), the test set (`umx1`) 78876 B (80200 B).
+- **0022**: its sfx router passes 52 to 0021's 'JUNO' mailbox (sfx=1 only: the feature needs 0029).
+
+### Protocol notes (against docs/um-pages.md)
+
+- Implemented as written: HEAD replaces a slot's data, HI KNOBS / STEPS / PAIR NAMES of another generation (or before the
+  HEAD) are dropped, malformed messages dropped (as `decode_pg`); 52 ASK `<slot>` every 10 s while the selected track's
+  READY slot has no HEAD for its 1A.
+- **Validity**: 0021 uses a slot's 52 data only while its HEAD's generation is the slot's committed 1A's and the slot is
+  READY. A 1A part 0 of another generation is staged, not committed, until all its parts are in; the data stays usable
+  until that commit (the spec says "drops it until the HEAD": the effect is the same once the new 1A is committed).
+- **SMPL page 2 needs P9..P16 as knobs** (1A flag bit 0): with the stock sample page as page 1 there is no SMPL page 2
+  (a Sidecar machine with P25..P32 and no P9..P16 would need its own SMPL page 1; not asked of the Rytm here).
+- VALUES with a voice whose values were another slot's replace them; a turn on a voice whose values are another slot's
+  starts from this machine's HI KNOBS defaults.
+- Pushed = a pair's row (the spec does not say). Page 1's title unchanged (the spec names page 2's only).
+
+### Tests [measured, rytm-emu 1.74, DTEMU_STRICT=1] `sfu_emu.py TAG umpages`
+
+20 checks (and the runs' fault / strict checks), on the test set `umx1` and on the full set `sfpm1` (with #15's `xpages`:
+14 / 14 there too). The test machine is the Sidecar's pagesprobe's shape: U1 with P1..P16 (page 2 knobs), P17..P32 but P31
+(P18 a list of 3), P4 a 19 x 19 pair (361 entries), P5 a stepped number (100 entries):
+
+- the choice's defaults are the def14 words; records 337 / 338 stepped (range, default, fine flag), 336 not;
+- the host's VALUES taken; P18's names asked `19 ASK what 1 arg 17`;
+- SRC held + DOWN: page 2, title `PG TEST 2/2`, SRC not given to stock; A..H = H17..H24 (upper left `High 17`..), the row
+  334..341; a turn of C goes out as 52 VALUES (V1, U1, P17..P32) and the kit's P1..P16 words stay;
+- a trig held on page 2: no lock on words 9..24, nothing sent, the kit unchanged;
+- a host VALUES (P21..P24) while page 2 shows is taken; SRC held + UP: L1..L8 and the row back;
+- SRC tapped twice on the SRC page: each held back and given to stock at its release - the machine list opens as on stock
+  (DOWN YES: U2); (one SRC press there only reselects the page, also on stock [measured on sfxbase]);
+- SMPL held + DOWN: SMPL page 2, `PG PAGE 2 2/2`, H25..H30 / H32 on the shared records (P31 an empty box);
+- a HEAD without P17..P32: nothing held back, no page 2; no HEAD for the 1A: `52 ASK 1`; a built-in machine: nothing;
+- P4 one detent: word 2 x v14(21), the trig's 04 report carries v14(21); P5 stops at 0x7f00 (entry 99) and 0; FUNC: one
+  entry a step; pushed: P4 one row (20 -> 39);
+- a lock on P4 with a trig held: an entry's exact word (0x081e, entry 23), fine flag, the base untouched, back after
+  power-off and a cold boot.
+
+Screens: `um-src2.png` (H17..H24, P19 turning), `um-title.png`, `um-smpl2.png` (`PG PAGE 2 2/2`, P31's box), `um-step.png`
+(knob D `N2 / N3`, entry 21 in the label while it turns).
+
+**Whole suites** (`umx1` against the unchanged base `sfxbase`, the same set): `sfu_emu.py all` 332 pass / 2 fail (base 278 /
+2: the same two `ext` checks; the new ones are umpages'), `us_emu.py all` 364 pass / 3 fail (base 364 / 3: the same three,
+the set's own - no 0026 for SAMPLER, diag = 1, PLAITS's exciter count). The
+emulator needs dtboot's `HOOK_WINDOW` 0x0800_0000 for us_emu (tools/emu/README.md) and the strict page-0 PCs for 1.74.
+
+**Not done / open**: no hardware run. MIDI out of a stepped knob not measured. 1.73: the new +0x2c claim's stock hash is
+derived from 1.74's address map (0x400a95dc), not checked against a 1.73 image (no 1.73 build was made).

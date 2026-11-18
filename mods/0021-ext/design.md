@@ -1080,3 +1080,40 @@ The host's Digitakt-style sample player as a machine of its own; DSP SAMPLE (45)
 
 Tests [measured, rytm-emu-mdpage]: `cu_emu.py TAG sa saknobs`, `bk_emu.py TAG salist`, `sa44_emu.py TAG`; all fail
 on bfd (43 not in the list: 23 downs reach PLAITS), pass on saa.
+
+## um-pages (2026-11-19): 52 UM PAGES, a user machine's P17..P32 and stepped knobs
+
+The Sidecar's `docs/um-pages.md` (sidecar-firmware `feat/um-pages`; `sim/protocol.py` `pg_*`): after each 1A the host
+describes the slot's P17..P32 knobs and its stepped P1..P16 knobs in **52 UM PAGES** (HEAD, HI KNOBS, STEPS, PAIR NAMES,
+each with the 1A's generation), and holds P17..P32's values per voice (VALUES, both ways). 0021 keeps all of it beside the
+1A caches; 0029 does the pages' UI (its design.md section 14). Only with `slots=1`; generic, any user machine.
+
+- **Storage** (`um_slot` a slot, 5186 B, and `um_ram`, 256 B: the firmware's heap, allocated in `us_init` beside the 1A
+  caches, zeroed before `umr` publishes them to the MIDI task). A slot's 52 data is used only while its HEAD's generation
+  is the slot's committed 1A's and the slot is READY (`um_ok`). Pair names: 36 x 7 characters per P1..P16 knob.
+- **The MIDI task** (`um_in`, from `us_sysex`: 0022's sfx router passes 52 to the 'JUNO' mailbox): a HEAD replaces the
+  slot's data (knobs and steps cleared, titles, pages, last P); HI KNOBS / STEPS / PAIR NAMES of another generation, or
+  before its HEAD, are dropped; anything malformed (lengths, ranges, a byte over 127, a pair whose steps are not n x n) is
+  dropped as `decode_pg` drops it. VALUES: taken unless that P has a turn not sent yet, or the voice sent one within 500 ms
+  (0029's crossing rule); values for another slot replace the voice's (its pending turns dropped).
+- **Pages** (`umr->pg[s]`: bit 0 SRC page 2, bit 1 SMPL page 2, per slot; set by 0029 through `um_page`): `us_which`
+  answers knob 16..31 for the page's records while it shows, so `us_record`, `us_text`, `ext_steps_us` and the list asks
+  (`us_knob_of`) work on P17..P32 as on P1..P16. SRC page 2: U(s+1)'s 8 records set up as P17..P24 and its machine-table
+  row (0x40287ccc + 36 m) given record 0 where HI KNOBS names no knob; page 1 again: `us_slot_records`. SMPL page 2: the
+  shared records as P25..P32 (`us_page_record`: `p2_slot` bit 7 tells which set they hold) and `us_page_title` gives its
+  title. A new 1A (`us_commit`) puts the slot back on page 1; `um_live` does it when a HEAD drops the page, and sets the
+  page up again when its 52s moved.
+- **Titles**: page 2's is HEAD's page3 / page4 title, else the page's own with " 2/2" (SRC: the machine's name, what the
+  header shows there; SMPL: the 1A's title, else its name).
+- **List knobs of P17..P32**: names asked as P1..P16's (`19 ASK what 1 arg P - 1`, 16..31), 1B `list` 16..31 taken into
+  the slot's eight enum lists (`us_list_in` takes lst < 32).
+- **Stepped knobs**: `us_record` gives a STEPS knob the range 0..0x7f00, `def14` (the word 2 x def14) as its default and
+  the fine flag (+0x14, so a lock keeps the low byte: 14 bits); every other 0021 record the flag off, as in the image.
+  `us_defaults` (a choice) writes def14. `ext_steps` answers bit 12 for it: 0029 steps it one entry a detent.
+- **To the host** (`um_live`, from `us_live`, 20 Hz, never waiting on USB): a turned voice's `52 VALUES` (P17..P(last p), all
+  of them, the voice's slot); `52 ASK <slot>` every 10 s while the selected track's READY slot has no HEAD for its 1A.
+- **um_box** (`ext_steps(UM_Q)`, 'UMPG'): `get` / `put` (a paged record's value, the selected track's voice), `steps`,
+  `text` ("B3 / B12", the entry), `page`, `which`, `title`. UI task only.
+- **Cost**: with 0029's side 5.5 kB more code and data in the area (the full set `sfpm1`: 2920 B of elekloader RAM left,
+  0029's #15 names moved to the heap to make room), 26 KB of heap.
+- Tests: `tools/emu/sfu_emu.py TAG umpages` (0029 design.md section 14).

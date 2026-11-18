@@ -187,6 +187,14 @@ LP4 int looper_sysex(const uint8_t *d, int32_t len) {
     return 1;
   }
 #if LP_SFX   /* build param sfx: 1 with 0029-sendfx-ui */
+  if (d[4] == 0x52) {
+    /* UM PAGES (52; um-pages: a user machine's P17..P32 and stepped knobs) for 0021, through the 'JUNO' mailbox as its
+       1A..1D: 0021 keeps them beside the 1A caches, 0029 pages and steps the knobs. With sfx only (0029 is what uses
+       them), so the slots=1 routers without 0029 stay as they were. */
+    volatile uint32_t *mb = (volatile uint32_t *)0x40027a04u;
+    if (mb[0] == 0x4a554e4fu) ((int (*)(const uint8_t *, int32_t))mb[1])(d, len);
+    return 1;
+  }
   if ((d[4] >= 0x21 && d[4] <= 0x24 && d[4] != 0x23) || d[4] == 0x51) {
     /* SENDFX NAMES (21), STATE (22), LABELS (24) and FULL NAMES (51; 23 ASK only goes to the host) for 0029: its mailbox at a fixed address (0x401b9e54, cave23's tail),
        live when the magic 'SFXU' is there (0029 writes it at its first ev_tick). */

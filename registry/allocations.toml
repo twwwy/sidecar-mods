@@ -7230,6 +7230,18 @@ expect_sha256 = "3bb17fa73d2b0ea00ff5e316d544f5b763e9cdb2974518d342dc49dfa74d4e8
 from_symbol = "sfu_s_lset"
 note        = "SoundParameterSet +0x40 lock set"
 
+# um-pages (2026-11-19): SoundParameterSet +0x2c, a knob's turn (param_apply_delta's dispatch: set, id, delta, track,
+# FUNC, out flag; stock 0x400a95dc): a U slot's paged record takes it (the Sidecar's P17..P32), a stepped one moves one
+# entry a detent; every other record goes on to stock's unchanged (0029 design.md section 14).
+[[patch]]
+owner       = "0029-sendfx-ui"
+addr        = 0x401dcba0
+size        = 4
+expect_len  = 4
+expect_sha256 = "a3988bd13fa9f3341ce81780139571a77ec9601945a4310d91547e8022a7103b"
+from_symbol = "sfu_s_delta"
+note        = "SoundParameterSet +0x2c a knob's turn"
+
 [[patch]]
 owner       = "0029-sendfx-ui"
 addr        = 0x401dcc18
