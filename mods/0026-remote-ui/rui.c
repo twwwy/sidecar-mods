@@ -133,6 +133,7 @@ typedef void (*bmctor_fn)(void *bmp, int32_t w, int32_t h, void *pixels, void *m
 #define NENC   16
 #define NKQ    16
 #define TIMEOUT_TICKS 20                            /* 1 s of the 20 Hz tick without a host message */
+#define HOLD_TICKS 6                                /* um-draw: 300 ms, the last frame over a page change (sv.hold) */
 #define HELLO_TICKS 10                              /* 35 this long after the port came up (the host reads by then) */
 #define HELLO_UP    60                              /* 0.4.4: and not before the UI loop has run 3 s (the host's splash rule) */
 #define K_NAV0 0x40       /* LEFT RIGHT UP DOWN YES NO 0x40..0x45 */
@@ -800,7 +801,8 @@ static struct {
   /* 1027d: the cover decision and the 2B diagnostic */
   const void *top;                     /* the last view drawn (this tick) */
   uint32_t top_vt, nviews, top_age;    /* its vtable; the list's length; ticks since the top view changed */
-  uint8_t diag, diag_sent, diag_owed, pad2;   /* 2B's state byte now / last sent; 2B owed */
+  uint8_t diag, diag_sent, diag_owed, hold;   /* 2B's state byte now / last sent; 2B owed; um-draw: ticks the last
+                                          frame stays over a page change (HOLD_TICKS) */
   uint32_t diag_vt_sent_w;             /* the top vtable in the last 2B */
   uint32_t diag_tick, d2b;             /* tick of the last 2B; 2Bs sent */
   int32_t lock, lock_sent;             /* 1027e: the step held in GRID REC (0..63, -1 none): the values are its; as last sent */
@@ -984,6 +986,9 @@ static void sv_tick(void *ctrl, uint32_t r) {
   if (on && (!sv.on || sv.track != t || sv.mach != m || sv.pg != p)) {
     if (sv.on && sv.pg != p) { sv.poff = sv.p_track; sv.pend29 |= 2; }   /* um-draw: the old page's off first, so an
                                           older host (it drops a paged 29) ends its SRC view */
+    /* um-draw: a U slot's page change with the host's frame up: that frame stays until the new view's first commit (no
+       stock page flashed in the ~50..125 ms the 29 and the host's whole frame take), HOLD_TICKS at most */
+    sv.hold = sv.show && sv.on && sv.track == t && sv.mach == m && (uint32_t)(m - 35) < 5u ? HOLD_TICKS : 0;
     sv.on = 1; sv.track = (uint8_t)t; sv.mach = m; sv.pg = (uint8_t)p;
     sv.base = commits;
     sv.pend29 |= 1; sv.p_track = (uint8_t)(t | p); sv.p_on = 1; sv.vals_all = 1;
@@ -997,7 +1002,8 @@ static void sv_tick(void *ctrl, uint32_t r) {
   sv.lock = sv.on && pg == 1 && sv.pg < 0x20 ? sv_held_step() : -1;   /* 1027e (um-draw: P1..P8 / P9..P16 by the page) */
   if (r != sv.rx_seen) sv.idle = 0; else if (sv.idle < 0xffff) sv.idle++;
   sv.rx_seen = r;
-  sv.show = sv.on && !sv.covered && commits != sv.base && sv.idle < TIMEOUT_TICKS && !st.active && !st.splash_on;
+  if (commits != sv.base) sv.hold = 0; else if (sv.hold) sv.hold--;
+  sv.show = sv.on && !sv.covered && (commits != sv.base || sv.hold) && sv.idle < TIMEOUT_TICKS && !st.active && !st.splash_on;
   {                                    /* 1027d: 2B's state byte; owed on a change, and each second on the SRC page */
     uint8_t d = (uint8_t)(sv.on | sv.covered << 1 | (commits != sv.base) << 2 | (sv.idle >= TIMEOUT_TICKS) << 3 |
                           (st.active ? 1 : 0) << 4 | (st.splash_on ? 1 : 0) << 5 | sv.show << 6);

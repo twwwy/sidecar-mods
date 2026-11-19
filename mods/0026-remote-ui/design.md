@@ -2901,3 +2901,19 @@ probe (`api3_pages`, draw) as U1 on BD: the probe's frame on all four pages (its
 above, a P19 turn on page 3 (P19's bar 24 -> 26) and a P25 turn on page 4 redrawn by the host at once. The host takes a
 52 VALUES turn only once the voice is known to play the machine (a trig): before BD's first trig the turn is dropped and
 the frame stays (host rule, docs/um-pages.md "The host takes a VALUES ...").
+
+### um-draw b: no stock page between two plugin-drawn pages (2026-11-19, emulator only)
+
+On hardware, every page change on a user machine flashed the new page's stock screen first (the stock SMPL page, or 0029's
+page 2), then the plugin's frame. The cause: `sv_tick` set `sv.base = commits` on the change, so `sv.show` dropped until
+the host's first frame for the new view committed, about 50..125 ms later (the 29 goes out at the next tick, the host
+draws within 25 ms, a whole frame, then the next tick shows it).
+
+Now a page change on the same track and machine, on a U slot (machines 35..39), with the host's frame up keeps that
+frame on the glass (`sv.hold`, the old `pad2` byte: no RAM) until the new view's first commit, `HOLD_TICKS` (6, 300 ms)
+at most; then the new page's stock screen as before. Built-in Sidecar machines are unchanged: their SMPL page is
+stock, so a held SRC frame would be wrong there. A plugin that declines a page keeps the old frame for up to 300 ms
+before stock.
+
+Test: `sfu_emu.py <tag> umhold` (SMPL pressed with no SMPL frame yet: the SRC frame still up 150 ms later; then the
+SMPL frame; with no SMPL frame at all, stock after the hold). sfpm2 fails the first check, sfpm3 passes.

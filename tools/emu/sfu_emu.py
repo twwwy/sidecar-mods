@@ -793,6 +793,21 @@ def t_umdraw(e):
             scr != ud_frame(1) and e.peek(s, 0x8000ea00, 1)[0] < 35, f"29 {v29}")
 
 
+
+def t_umhold(e):
+    """um-draw: a page change on a U slot's track keeps the host's last frame up until the new view's first commit (no
+    stock page in between, HOLD_TICKS at most); with no frame for the new page, that page's stock screen after the hold."""
+    go, t = um_go()
+    old = ud_host(t + 50, t + 300, 1)
+    # SMPL at t + 300 (M: ~5 ms); 150 ms later, no SMPL frame yet (the host's answer to 29 10 01 takes ~50..125 ms)
+    _, v29, _, gap = ud_run(e, "uh-gap", t + 330, go + old + [(t + 300, "press", "SMPL")] + ud_alive(t + 300, t + 330))
+    U.check("umhold: SMPL pressed, the host's SMPL frame not here yet: SRC's frame still up, not the stock SMPL page",
+            (0x10, 1) in v29 and gap == ud_frame(1), f"29 {v29}")
+    _, _, _, scr = ud_run(e, "uh-new", t + 600, go + old + [(t + 300, "press", "SMPL")] + ud_host(t + 320, t + 600, 2))
+    U.check("umhold: then the SMPL frame", scr == ud_frame(2), "")
+    _, _, _, scr = ud_run(e, "uh-none", t + 900, go + old + [(t + 300, "press", "SMPL")] + ud_alive(t + 300, t + 900))
+    U.check("umhold: no SMPL frame comes: the stock SMPL page after the hold", scr != ud_frame(1) and scr is not None, "")
+
 X_TIME = 1124 + DL   # ui_sum ui_max ui_n mt_sum mt_max mt_n (DTCN0 counts)
 ST_TICKS = 1034   # m68k: 2-byte alignment (calls at 1030)
 
@@ -1235,7 +1250,7 @@ def t_fmname(e):
           glyphs(rows, 76, 100, 6, 100) is not None, "")
 
 
-TESTS = {"umpages": t_umpages, "umdraw": t_umdraw, "fmname": t_fmname, "enum": t_enum, "typelist": t_typelist, "enumlock": t_enumlock, "enumkit": t_enumkit, "ext": t_ext,
+TESTS = {"umpages": t_umpages, "umdraw": t_umdraw, "umhold": t_umhold, "fmname": t_fmname, "enum": t_enum, "typelist": t_typelist, "enumlock": t_enumlock, "enumkit": t_enumkit, "ext": t_ext,
          "labels": t_labels, "fullnames": t_fullnames, "xpages": t_xpages, "cost": t_cost, "bw": t_bw, "bw2": t_bw2, "bwwrap": t_bwwrap, "pages": t_pages, "names": t_names, "locks": t_locks, "save": t_save, "stock": t_stock, "kits": t_kits}
 
 
