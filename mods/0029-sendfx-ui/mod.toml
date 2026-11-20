@@ -31,7 +31,8 @@ effect with P5..P16 gets pages 2 / 3 (SRC / SMPL held + DOWN / UP; held by the S
 no locks; the page's own records switched while shown). um-pages: a user machine's P17..P32 on SRC / SMPL
 page 2 (52 UM PAGES through 0021, the same held key + DOWN / UP, no locks) and its stepped knobs (one entry a detent,
 the entry's 14-bit word, fine-flagged locks); the SoundParameterSet's +0x2c wrapped too. lock-halves: SEND FX
-P1..P4 lock, show and clear their own half of FX 38..41 (FX set +0x44 wrapped too; 0025 plays it). Emulator only. design.md.
+P1..P4 lock, show and clear their own half of FX 38..41 (FX set +0x44 wrapped too; 0025 plays it). amp-halves: SFX1 / SFX2
+the same on sound index 0 (Sound set +0x44 wrapped too). Emulator only. design.md.
 """
 
 [sources]

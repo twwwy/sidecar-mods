@@ -29,7 +29,7 @@ Labels are generic (P1..P5) because the effect lives on the Sidecar. TYPE shows 
 
 | knob (page 1) | word | half | stored | p-lock |
 |---|---|---|---|---|
-| SFX1 / SFX2 (each track) | sound index 0 | hi / lo | kit sound, stored slot 41 (stock) | yes: type 41 + fine slot (one word) |
+| SFX1 / SFX2 (each track) | sound index 0 | hi / lo | kit sound, stored slot 41 (stock) | yes, each half its own: type 41 (hi) + its fine slot (lo) (section 17) |
 | SEND FX 1 TYPE / ROUTE | FX 29 | hi / lo | kit FX slot 20 (stock) | **no** (kit only) |
 | SEND FX 1 P1 / P2 | FX 38 | hi / lo | kit 0x816 (0025) | yes, each half its own: types 42 / 46 (0025) |
 | SEND FX 1 P3 / P4 | FX 39 | hi / lo | kit 0x818 (0025) | yes, each half its own: 43 / 47 |
@@ -54,7 +54,7 @@ step per parameter, so the lock word of FX 38..41 says which of its halves are l
 a lock made on P1 locks P1 only, and P2 on that step goes on following the kit (its base, turned or kit-switched); P2
 locked too keeps both; clearing P1's lock (trig held, its encoder pushed) leaves P2's. The file stores each half as its
 own lock type, as before. (Before 2026-11-20 a lock took the other half's current value with it and a clear cleared both.)
-SFX1 / SFX2 (sound index 0) still lock as one word: not changed.
+SFX1 / SFX2 (sound index 0) lock the same way since amp-halves (section 17, 2026-11-20).
 
 ## 3. How it is built [code; measured where noted]
 
@@ -78,7 +78,7 @@ SFX1 / SFX2 (sound index 0) still lock as one word: not changed.
   [measured, before the fix]. 0029 writes those itself: the set's FX words, the FX trig array (what plays and what
   0025 reports) and the project copy's 0x816..0x81D (0025's storage).
 - **Locks:** the stock path (view +0x74 -> set +0x40 -> `track_lock_set` 0x400c0520); for FX 38..41 the word holds
-  only the knob's half since lock-halves (section 15), the sound index 0 locks the merged word; the
+  only the knob's half since lock-halves (section 15), the sound index 0 too since amp-halves (section 17); the
   incremental save follows. For FX 38..41 it takes 0025's `sfx_incr` branch (a full rebuild, types 42..49) - the
   branch the storage spec's next step 2 asked to exercise [measured: below].
 - **core-ar2 events:** `ev_tick` for the init and the ASK. No key hook: the page key's repeat press is the stock
@@ -716,7 +716,7 @@ says which halves are locked (`hi << 8 | lo << 1` both, `hi << 8 | 1` hi only, `
 - **Base turns** (`fx_write_hi`): the FX trig array now takes only the turned half, so turning P2 while a step plays a P1
   lock leaves P1's locked value playing until the next trig (the kit word and the project copy get the whole word as
   before).
-- TYPE / ROUTE (words 29 / 0) stay kit only; SFX1 / SFX2 (sound index 0) are unchanged: one lock word for both.
+- TYPE / ROUTE (words 29 / 0) stay kit only; SFX1 / SFX2 (sound index 0): one lock word for both until amp-halves (section 17).
 - **Cost:** 556 B more code in the area (`lk_half`, `lk_put`, `sfu_f_lclr`, the lock get / set changes), no state; the full
   set (`lh1` = sfpm3's mods and params) leaves 1452 B of elekloader RAM (2388 on sfpm3), 0025's part included.
 - **Merging:** encoder order and view messages are untouched; the change is the FX set's lock wrappers, `fx_write_hi`, one
@@ -773,3 +773,33 @@ separate from its knob, lock and storage code:
 Tests: `sfu_emu.py sfd3 fxview fxhold` (0026's set; 0026 design.md "sendfx-draw"), and every earlier test on page 1 with
 the new order (`sfu_emu.py sfd3 all`, `halves` included). Full set `sfd3` (this on `lh1`): 672 B elekloader RAM left
 (`lh1` 1452 B).
+
+## 17. amp-halves (2026-11-20): SFX1 / SFX2 locks independent per knob
+
+Branch `feat/amp-lock-halves` (off `feat/sendfx-draw`). AMPLITUDE 2's SFX1 / SFX2 (sound index 0 hi / lo, every voice track)
+lock, show and clear their own half, as SEND FX P1..P4 do since section 15; the encoding, storage and playback are 0025's
+(its design.md "amp-halves"). Tags as above; rytm-emu 1.74, DTEMU_STRICT=1; nothing flashed.
+
+- **Lock get** (Sound set +0x3c, `sfu_s_lget`): `lk_half` (the knob's half, -1 when only the other half is locked).
+- **Lock set** (+0x40, `sfu_s_lset`): `lk_put`, only the knob's half; no base value is taken in any more.
+- **Lock clear** (+0x44, new: the FX set's wrapper made generic, `lclr`, and `sfu_s_lclr` beside `sfu_f_lclr`; a `ptr`
+  patch at 0x401dcbb8 = 1.74 0x401dce68, stock 0x400a9956 (1.74 0x400a99c2) -> track_lock_clear [code]): trig held + encoder
+  A / B pushed clears that knob's half only.
+- The FX set's lock get / set lost their non-38..41 branches (dead since TYPE / ROUTE return first), which pays for most
+  of the above: 0029 +24 B of code (16214 -> 16238), no state.
+- Base turns: unchanged (the stock write; 0025 design.md "amp-halves", "Not changed").
+
+**Tests** [measured, rytm-emu 1.74, DTEMU_STRICT=1; `ah1` = sfd3's mods and params with this change, build.py / verify.py
+PASS; the unchanged `sfd3` (its MAIN OS byte-identical to this branch's baseline build) for comparison]:
+`sfu_emu.py TAG amphalves` (13 checks): BD (AMPLITUDE 2, RECORD, trigs 1 / 5) T1 + A: hi half only (`1201`), fine flag
+set; SFX2's base turned: lock unchanged; T1 + B: both (`1218`); T1 + PUSH A: SFX2's half alone (`0c03`); T5 + A: hi only;
+CP (trigs 1 / 3) step 3 SFX2 alone and RS (the same voice; trigs 2 / 4) step 2 SFX1 alone, each with its own kit bases;
+PLAY: BD `0c18` / `1824` (step 1 the kit's SFX1 with SFX2's lock, step 5 the reverse), CP `063c` / kit, RS `180c` / kit;
+BD's bases turned and PLAY again: `0618` / `1830` (the new kit half); A01's stored (41, t) and fine slots 0xff in each
+unlocked half; power-off + cold boot and SAVE PROJECT AS / wipe / LOAD PROJECT: all four words as they were. On sfd3 7 of
+13 fail (a SFX1 lock stores `120c`, PUSH A clears both, BD plays `0c24` on step 1).
+`sfu_emu.py TAG ampold` (5 checks; back-compat): stock 1.74 cold-boots A01 with a type 41 + fine pair on BD (steps 1 / 5 /
+9: `3342 440a 1000`) and a type 41 slot with no fine slot on CP (`2200 1100`) and saves the project (stock's own rebuild);
+this build cold-boots that state, plays it (BD `3342 440a 1000` and the kit's word, CP `2200 1100`), loads stock's file (the
+same words) and saves it again: A01's (41, BD) + fine and (41, CP) slots byte for byte stock's. It passes on sfd3 too, as a
+back-compat test should.
