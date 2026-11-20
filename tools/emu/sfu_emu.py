@@ -548,6 +548,46 @@ def t_ampold(e):
             f"{ours} / {stock_slots}")
 
 
+def scene_list(e, snap):
+    """The active live kit's scene lock list (kit + 0x88e, 48 x {u16 value, s8 track, s8 sound index, s8 scene}; free:
+    track > 12): [(value, track, index, scene)] (explore/scene-halves re/subsystems/scenes.md)."""
+    k = int.from_bytes(e.peek(snap, 0x800067b8, 4), "big")
+    b = e.peek(snap, X.LIVE_KIT0 + 2531 * k + 0x88e, 240)
+    return [(int.from_bytes(b[5 * i:5 * i + 2], "big"), b[5 * i + 2], b[5 * i + 3], b[5 * i + 4]) for i in range(48)
+            if b[5 * i + 2] <= 12]
+
+
+SCN_ON = [(400, "press", "SCNE"), (450, "press", "FUNC:150M"), (500, "press", "SD")]   # scene mode, SD = scene 2
+
+
+def t_scnguard(e):
+    """scene-guard: with a scene pad held, AMPLITUDE 2's SFX1 / SFX2 and SEND FX 1's P1 / P2 make no scene lock (the
+    facades' accepts refuses 0029's records), a stock parameter (ATK, delay TIME) still does; after a power-off and cold
+    boot the list is as it was (no P1 record stored as FX slot 0, so no stray lock on FX index 9, delay TIME)."""
+    ev = [(50, "press", "AMP")] + SCN_ON + [(650, "press", "SD:400M"), (750, "turn", ("0:+12", 2, 20)),
+          (1200, "press", "AMP"), (1400, "press", "SD:500M"), (1500, "turn", ("0:+12", 2, 20)), (1650, "turn", ("1:+12", 2, 20))]
+    l0 = scene_list(e, e.snap)   # (led.img's kit has scene locks of its own)
+    s1 = e.run("scng-amp", 2200, ev, save=True)
+    l1 = [x for x in scene_list(e, s1) if x not in l0]
+    bd = [x for x in l1 if x[1] == 0]
+    U.check("scnguard: SD held on AMPLITUDE (ATK) - a stock scene lock on BD; on AMPLITUDE 2, SFX1 and SFX2 - none on "
+            "BD's sound index 0", bd and not [x for x in bd if x[2] == 0], f"new {l1}")
+    # (FX, SRC lands on SEND FX 1 from the base [measured]; SRC again: DELAY)
+    ev = [(50, "press", "FX"), (150, "press", "SRC")] + SCN_ON + [(650, "press", "SD:500M"),
+          (750, "turn", (f"{K1[2]}:+12", 2, 20)), (900, "turn", (f"{K1[3]}:+12", 2, 20)),
+          (1300, "press", "SRC"), (1500, "press", "SD:400M"), (1600, "turn", ("0:+12", 2, 20))]
+    s2 = e.run("scng-fx", 2200, ev, save=True)   # (from the base: a second SCNE would leave scene mode)
+    l2 = scene_list(e, s2)
+    fx = [x for x in l2 if x[1] == 12 and x not in l0]
+    U.check("scnguard: SD held on DELAY (TIME) - a stock scene lock on FX index 9; on SEND FX 1, P1 and P2 - none on FX "
+            "38..41", [x for x in fx if x[2] == 9] and not [x for x in fx if 38 <= x[2] <= 41], f"new {fx}")
+    s3, _ = X.poke_boot(e, "scng-boot", {}, snap=s2, start=e.clock + 2200)
+    l3 = scene_list(e, s3)
+    hi = lambda L: sorted((v >> 8, t, k, n) for v, t, k, n in L)   # (stored: the value's hi byte only)
+    U.check("scnguard: power-off and cold boot - the scene list as it was (no stray lock on FX index 9)",
+            hi(l3) == hi(l2) and l3, f"new {[x for x in l3 if x not in l0]} (before the boot {fx})")
+
+
 # struct sfu_x (sfu.c): lab[NLT] (130 B each), gen, shown_gen, cur[2], shown[2], lbl[2][4][5], fxset, dial, counters.
 # NLT 16 since rui1049 (8 before): every offset below moves by DL
 NLT = 16
@@ -1687,7 +1727,8 @@ def t_fmname(e):
 
 TESTS = {"umpages": t_umpages, "umdraw": t_umdraw, "umhold": t_umhold, "fxview": t_fxview, "fxhold": t_fxhold, "fmname": t_fmname, "enum": t_enum, "typelist": t_typelist, "enumlock": t_enumlock, "enumkit": t_enumkit, "ext": t_ext,
          "labels": t_labels, "fullnames": t_fullnames, "xpages": t_xpages, "cost": t_cost, "bw": t_bw, "bw2": t_bw2, "bwwrap": t_bwwrap, "pages": t_pages, "names": t_names, "locks": t_locks, "save": t_save, "stock": t_stock, "kits": t_kits, "halves": t_halves,
-         "amphalves": t_amphalves, "ampold": t_ampold}
+         "amphalves": t_amphalves, "ampold": t_ampold,
+         "scnguard": t_scnguard}
 
 
 def main():

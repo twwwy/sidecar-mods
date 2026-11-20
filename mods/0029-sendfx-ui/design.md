@@ -791,15 +791,52 @@ lock, show and clear their own half, as SEND FX P1..P4 do since section 15; the 
 
 **Tests** [measured, rytm-emu 1.74, DTEMU_STRICT=1; `ah1` = sfd3's mods and params with this change, build.py / verify.py
 PASS; the unchanged `sfd3` (its MAIN OS byte-identical to this branch's baseline build) for comparison]:
-`sfu_emu.py TAG amphalves` (13 checks): BD (AMPLITUDE 2, RECORD, trigs 1 / 5) T1 + A: hi half only (`1201`), fine flag
+`sfu_emu.py TAG amphalves` (12 checks): BD (AMPLITUDE 2, RECORD, trigs 1 / 5) T1 + A: hi half only (`1201`), fine flag
 set; SFX2's base turned: lock unchanged; T1 + B: both (`1218`); T1 + PUSH A: SFX2's half alone (`0c03`); T5 + A: hi only;
 CP (trigs 1 / 3) step 3 SFX2 alone and RS (the same voice; trigs 2 / 4) step 2 SFX1 alone, each with its own kit bases;
 PLAY: BD `0c18` / `1824` (step 1 the kit's SFX1 with SFX2's lock, step 5 the reverse), CP `063c` / kit, RS `180c` / kit;
 BD's bases turned and PLAY again: `0618` / `1830` (the new kit half); A01's stored (41, t) and fine slots 0xff in each
 unlocked half; power-off + cold boot and SAVE PROJECT AS / wipe / LOAD PROJECT: all four words as they were. On sfd3 7 of
-13 fail (a SFX1 lock stores `120c`, PUSH A clears both, BD plays `0c24` on step 1).
+12 fail (a SFX1 lock stores `120c`, PUSH A clears both, BD plays `0c24` on step 1).
 `sfu_emu.py TAG ampold` (5 checks; back-compat): stock 1.74 cold-boots A01 with a type 41 + fine pair on BD (steps 1 / 5 /
 9: `3342 440a 1000`) and a type 41 slot with no fine slot on CP (`2200 1100`) and saves the project (stock's own rebuild);
 this build cold-boots that state, plays it (BD `3342 440a 1000` and the kit's word, CP `2200 1100`), loads stock's file (the
 same words) and saves it again: A01's (41, BD) + fine and (41, CP) slots byte for byte stock's. It passes on sfd3 too, as a
 back-compat test should.
+
+## 18. scene-guard (2026-11-20): no new scene / performance locks on 0029's records
+
+The user's decision (2026-11-20), from the scene investigation on `explore/scene-halves` (6f16e5f,
+re/subsystems/scenes.md): stock's scene list keeps **one record per word** (SFX2 alone plays as SFX1; P1 / P2 share FX
+38's record) and its save converter stores FX index 38..41 as FX **slot 0**, which reloads as a scene lock on FX index 9
+(delay TIME) [measured, 1.74]. Until real per-half scene locks exist, 0029's records take no new scene or performance lock.
+Tags as above; rytm-emu 1.74, DTEMU_STRICT=1; nothing flashed.
+
+- **`sfu_scn_ok(facade, id)`**: 0 for SFX1 / SFX2 and SEND FX TYPE / ROUTE / P1..P4 (ids 14..27), BASE / WIDTH (1..4) and
+  a page's P5..P16 (`pq`), else stock's accepts. Two `ptr` patches: the scene facade's vtable (1.73 0x401df6c4, 1.74
+  0x401df974) +0x24 at 0x401df6e8 (1.74 0x401df998; stock 0x400b83d0, 1.74 0x400b843c) and the performance facade's (1.73
+  0x401ddd38, 1.74 0x401ddfe8: its +0x20 answers 1, relative [code]) +0x24 at 0x401ddd5c (1.74 0x401de00c; stock
+  0x400acc3c, 1.74 0x400acca8). Both stock accepts are the same code (`0x40006eec(id)`: the record's kind <= 60) [code],
+  so one wrapper serves both.
+- Callers [code, scenes.md]: the knob turn with a lock target (1.74 0x400385f8), push-clear (0x40038500) and the
+  displays (0x400387ba, 0x40039634, 0x40039c46, 0x400d26ca) ask accepts first; the page LEDs (0x400c9392) call has()
+  without it, so an existing record still lights its page. Existing records in a kit (old projects) are not touched: they
+  load, play and save as before (the guard only refuses new ones; push-clear of such a record on a guarded knob is refused
+  too: clear the scene instead) [inferred from the callers].
+- Not covered: um-pages' paged U knobs (P17..P32, `um_val`) still take scene locks on the record's container word (not
+  asked for; a few bytes more) [inferred]. The performance facade's guard is in [code] only: no emulator test drives
+  PERFORMANCE mode.
+- Cost: 0029 +88 B of code (16238 -> 16326), no state.
+
+**Test** `sfu_emu.py TAG scnguard` (3 checks; SCNE + FUNC, SD = scene 1 held; led.img's kit has scene locks of its own,
+so the checks look at the new records): AMPLITUDE knob A (ATK) makes a scene lock on BD (index 33), AMPLITUDE 2's SFX1 /
+SFX2 none on index 0; SEND FX 1's P1 / P2 none on FX 38..41, DELAY's TIME one on FX index 9; power-off + cold boot: the
+list as before (values compared by their hi byte, all the stored format keeps).
+
+**Results** [measured, rytm-emu 1.74, DTEMU_STRICT=1, rebased on feat/sendfx-draw 4aa90ee (sfd4); `ag1` = sfd4's mods and
+params with amp-halves and scene-guard, build.py / verify.py PASS]: `scnguard` 3 / 0 on ag1 (the AMP-only build ah2 with the
+guard: sg1, 3 / 0); on the unchanged sfd4 0 / 3: SFX2 / SFX1 make a record (2048, BD, 0), P1 one on FX 38, and after the
+cold boot that record is (12, 9): the delay TIME corruption. `amphalves` 12 / 0, `ampold` 5 / 0. Suites on ag1: `sfu all`
+545 / 0 (halves 10, fxview 5, fxhold 12 included), `us all` 371 / 0, `sfx all` 107 / 4 - fx38's incremental-save check,
+reload (2) and kitswitch (1), the same four on the unchanged sfd4 (107 / 4) [measured], so not this change. Full set
+elekloader RAM: sfd4 748 B spare, + amp-halves 584 B, + scene-guard (ag1) 496 B.

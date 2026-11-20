@@ -7332,6 +7332,28 @@ expect_sha256 = "9de744da8f24c2bd0351a3b01f75e63ddebb4298273f71acb9d0f7aced01365
 from_symbol = "sfu_s_lclr"
 note        = "SoundParameterSet +0x44 lock clear"
 
+# scene-guard (2026-11-20): the scene lock facade's vtable (1.74 0x401df974) +0x24 accepts(id) (stock 0x400b83d0: the
+# record's kind <= 60) and the performance facade's (1.74 0x401ddfe8; its +0x20 answers 1, relative) +0x24 (stock
+# 0x400acc3c, the same code): refused for 0029's records (SFX1 / SFX2, SEND FX TYPE / ROUTE / P1..P4, BASE / WIDTH, a
+# page's P5..P16), else stock. The knob turn, push-clear and display paths call it first; existing records untouched.
+[[patch]]
+owner       = "0029-sendfx-ui"
+addr        = 0x401df6e8
+size        = 4
+expect_len  = 4
+expect_sha256 = "f104d73eab1881f13fe11c6d46d8250fd81bb2600f327190cbf3cda2715d9e40"
+from_symbol = "sfu_scn_ok"
+note        = "scene facade +0x24 accepts"
+
+[[patch]]
+owner       = "0029-sendfx-ui"
+addr        = 0x401ddd5c
+size        = 4
+expect_len  = 4
+expect_sha256 = "35e63ac9cd5431307723676d59ffbaf2343c67bfd5d4304e841f2a503cd8d172"
+from_symbol = "sfu_scn_ok"
+note        = "performance facade +0x24 accepts"
+
 # Parameter records 14..27 (dead 'Error' records: no CC table maps to them [measured]): kind (AMP 0x35 /
 # DELAY 0x39 / REVERB 0x38 group), container index (sound 0; FX 29 29 38 38 39 39 / 0 0 40 40 41 41), range
 # 0..0x7f00, +0x14 = 1 (stock locks them with the fine slot: 0x400071a6), no CC / NRPN, no modflags. Name pointers

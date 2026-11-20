@@ -652,6 +652,19 @@ static int32_t lclr(void *set, int32_t id, int32_t step, lg_fn get, ls_fn put, l
 int32_t sfu_f_lclr(void *set, int32_t id, int32_t step) { return lclr(set, id, step, F_LGET, F_LSET, F_LCLR); }
 int32_t sfu_s_lclr(void *set, int32_t id, int32_t step) { return lclr(set, id, step, S_LGET, S_LSET, S_LCLR); }
 
+/* scene-guard (2026-11-20): the scene and performance lock facades' accepts(id) (their vtables' +0x24, ptr patches
+   0x401df6e8 and 0x401ddd5c; stock 0x400b83d0 / 0x400acc3c, the same code: the record's kind <= 60). Refused for our
+   records - SFX1 / SFX2, SEND FX TYPE / ROUTE / P1..P4 (ids 14..27), BASE / WIDTH (1..4) and a page's P5..P16 - so a
+   scene or performance edit makes no new lock on them: the stock list keeps one record per word (two knobs in one
+   record) and stores FX 38..41 as FX slot 0, which reloads as a lock on FX index 9 (delay TIME) [measured, 1.74]. The
+   knob turn 0x400385f8, push-clear 0x40038500 and the displays ask this first; records already in a kit stay and play. */
+#define SCN_OK ((rd_fn)0x400b83d0u)
+int32_t sfu_scn_ok(void *f, int32_t id) {
+  int32_t k;
+  if (OURS(id) || BW(id) || pq(id, &k) != -1) return 0;
+  return SCN_OK(f, id);
+}
+
 /* page_get_value for our ids (the gate below): the set's value, a step's lock first */
 int32_t sfu_get(void **view, int32_t id, int32_t lock) {
   void **set = ((void **(*)(void *, int32_t))((uint32_t *)*view)[160 / 4])(view, -1);
