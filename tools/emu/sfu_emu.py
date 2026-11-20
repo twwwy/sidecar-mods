@@ -1750,10 +1750,82 @@ def t_fmname(e):
           glyphs(rows, 76, 100, 6, 100) is not None, "")
 
 
+# scene-edit: SCN_ON is scene edit - SceneEditView (SCNE, then FUNC held + a pad; it stays on top after the pad and FUNC
+# are let go), stacked after SamplerLedView. It draws its bar (SCENE n, LOCKS n) over the page's bottom row; UP / DOWN step
+# its scene [measured].
+def scn_edit(t):
+    return [(t + a - 400, k, v) for a, k, v in SCN_ON]
+
+
+def bottom(scr):
+    """the screen's bottom row (y 56..63: byte 8 x of each column), the scene edit bar's place"""
+    return bytes(scr[8 * x] for x in range(128)) if scr else None
+
+
+def body(scr):
+    """the screen without its bottom row"""
+    return bytes(b for i, b in enumerate(scr) if i % 8) if scr else None
+
+
+def t_scnedit(e):
+    """scene-edit (hardware report on the user-machine set, 2026-11-21): in scene edit SRC / SMPL held + UP / DOWN pages a send
+    FX's SEND FX pages and a U slot's SRC / SMPL page 2 as on the plain page, while UP / DOWN alone still step the scene
+    (stock); the host's frame shows on those pages as on the plain page, stock's bar (SCENE n, LOCKS n) kept over its
+    bottom row. Screens: se-*.png."""
+    import rui_emu as R
+    go, ex, t = fd_go(e, both=False)
+    ed = go + scn_edit(t)
+    s, _, scr0 = fd_run(e, "se-fx", t + 500, ed, ex)
+    g0 = pg_state(e, s)
+    U.check("scnedit: SEND FX 1 (FX16) in scene edit: still page 1, 0029 sees the page as the screen (ontop 1), no scene "
+            "engaged", g0["pg"] == [0, 0] and g0["ontop"] == 1 and R.kit_scene(e, s) == 0xff, f"{g0} {R.kit_scene(e, s):#x}")
+    s, _, scr = fd_run(e, "se-fx-down", t + 600, ed + [(t + 300, "press", "SRC:300M"), (t + 400, "press", "DOWN")], ex)
+    g = pg_state(e, s)
+    U.check("scnedit: SRC held + DOWN: SEND FX 1 page 2/3, the edited scene not stepped (the bar as before)",
+            g["pg"] == [1, 0] and bottom(scr) == bottom(scr0) and scr != scr0, f"{g['pg']}")
+    s, _, scr = fd_run(e, "se-fx-up", t + 950, ed + [(t + 300, "press", "SRC:200M"), (t + 400, "press", "DOWN"),
+                                                     (t + 700, "press", "SRC:150M"), (t + 750, "press", "UP")], ex)
+    U.check("scnedit: SRC held + UP: page 1 again, the bar as before", pg_state(e, s)["pg"] == [0, 0] and
+            bottom(scr) == bottom(scr0), f"{pg_state(e, s)['pg']}")
+    s, _, scr = fd_run(e, "se-fx-step", t + 600, ed + [(t + 400, "press", "DOWN")], ex)
+    U.check("scnedit: DOWN alone: stock's scene step (the bar changes), the page stays 1", pg_state(e, s)["pg"] == [0, 0] and
+            bottom(scr) != bottom(scr0) and body(scr) == body(scr0), f"{pg_state(e, s)['pg']}")
+    # the host draws SEND FX 1: its frame, stock's bar over the bottom row; page 2's frame after SRC held + DOWN
+    on = [(30, "usb", P.sendfx_draws(0, 1))]
+    s, v29, scr = fd_run(e, "se-fxdraw", t + 600, go + on + ud_host(t, t + 600, 1) + scn_edit(t + 100), ex)
+    U.check("scnedit: DRAWS 1 in scene edit: the host's frame on SEND FX 1, the bar (stock's) over its bottom row",
+            scr is not None and body(scr) == body(ud_frame(1)) and bottom(scr) == bottom(scr0), f"29 {v29}")
+    s, v29, scr = fd_run(e, "se-fxdraw2", t + 800, go + on + ud_host(t, t + 450, 1) + scn_edit(t + 100) +
+                         [(t + 350, "press", "SRC:300M"), (t + 450, "press", "DOWN")] + ud_host(t + 480, t + 800, 2, seq0=40), ex)
+    U.check("scnedit: DRAWS 1, SRC held + DOWN: 29 0C 00, 1C 01 and page 2's frame, the bar over it",
+            (0x1c, 1) in v29 and body(scr) == body(ud_frame(2)) and bottom(scr) == bottom(scr0), f"29 {v29}")
+    # a U slot (the host draws it): the SRC page, then SRC held + DOWN (page 2)
+    go, t = um_go()
+    s, v29, v2a, scr = ud_run(e, "se-um", t + 600, go + ud_host(t + 50, t + 600, 1) + scn_edit(t + 100))
+    U.check("scnedit: U1's SRC page in scene edit: the host's frame, the scene edit bar over its bottom row",
+            scr is not None and body(scr) == body(ud_frame(1)) and bottom(scr) != bottom(ud_frame(1)) and (0, 1) in v29,
+            f"29 {v29}")
+    s, v29, v2a, scr = ud_run(e, "se-um2", t + 800, go + scn_edit(t + 100) + [(t + 350, "press", "SRC:300M"),
+                              (t + 450, "press", "DOWN")] + ud_host(t + 50, t + 800, 3))
+    g = um_state(e, s)
+    U.check("scnedit: U1, SRC held + DOWN in scene edit: SRC page 2 (29 20 01), its frame with the bar",
+            (0x20, 1) in v29 and g["pg"] == 1 and body(scr) == body(ud_frame(3)), f"29 {v29} {g['pg']}")
+    # the scene guard on SRC page 2 reached in scene edit: SD held + P19 (knob C) makes no scene lock
+    l0 = scene_list(e, e.snap)
+    su = e.run("se-um-guard", t + 1100, go + scn_edit(t + 100) + [(t + 350, "press", "SRC:300M"), (t + 450, "press", "DOWN"),
+               (t + 700, "press", "SD:300M"), (t + 800, "turn", (f"{U.UI['knob_enc']['C']}:+12", 2, 20))], save=True)
+    lu, pg = [x for x in scene_list(e, su) if x not in l0], um_state(e, su)["pg"]
+    U.check("scnedit: U1's SRC page 2 reached in scene edit, SD held + P19 turned: no scene lock (scene guard)",
+            pg == 1 and not lu, f"page {pg} new {lu}")
+    # scene mode's pads as before: SCNE then SD (no FUNC) engages scene 2
+    s = e.run("se-pad", 400, [(100, "press", "SCNE"), (200, "press", "SD")], save=True)
+    U.check("scnedit: SCNE, SD (no FUNC): scene 2 engaged (byte 1), as stock", R.kit_scene(e, s) == 1, hex(R.kit_scene(e, s)))
+
+
 TESTS = {"umpages": t_umpages, "umdraw": t_umdraw, "umhold": t_umhold, "fxview": t_fxview, "fxhold": t_fxhold, "fmname": t_fmname, "enum": t_enum, "typelist": t_typelist, "enumlock": t_enumlock, "enumkit": t_enumkit, "ext": t_ext,
          "labels": t_labels, "fullnames": t_fullnames, "xpages": t_xpages, "cost": t_cost, "bw": t_bw, "bw2": t_bw2, "bwwrap": t_bwwrap, "pages": t_pages, "names": t_names, "locks": t_locks, "save": t_save, "stock": t_stock, "kits": t_kits, "halves": t_halves,
          "amphalves": t_amphalves, "ampold": t_ampold,
-         "scnguard": t_scnguard}
+         "scnguard": t_scnguard, "scnedit": t_scnedit}
 
 
 def main():

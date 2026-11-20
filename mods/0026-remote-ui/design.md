@@ -2977,3 +2977,32 @@ Tests [measured, rytm-emu 1.74, DTEMU_STRICT=1] `sfu_emu.py sfd1 fxview fxhold` 
 **Needs hardware**: that the hardware's render is gated by ctrl + 0x20 alone as in rytm-emu (the freeze) [inferred from
 core-ar2's README and the emulator]; that the stock page key's release (where it cycles) and the FX key are processed
 before the tick in the same UI pass, so no new-page render slips in before the hold starts [measured in rytm-emu only].
+
+## scene-edit: the plugin-drawn screen in scene edit (2026-11-21, emulator only)
+
+Hardware report (the user-machine set, sfpm3's line): in scene edit the SRC page of a U slot (a user machine) showed the stock page,
+not the host's frame. Tags: [code] 1.74 disassembly, [measured] rytm-emu 1.74, DTEMU_STRICT=1.
+
+- **Scene edit** is SceneEditView (1.73 0x401e2c38, 1.74 0x401e2ee8): SCNE, then FUNC held + a pad; it stays on top,
+  after SamplerLedView, once both are let go. Over the page it draws only its bar in the bottom row (y 56..63: SCENE n
+  with its arrows, LOCKS n), where the plain page has BD LEV / the pattern; header and knobs are the page's [measured].
+- **Cause** [code; measured on sfpm3 and ag1]: SceneEditView is in 1042's overlay names (`ov_names`), so `sv_page` took it
+  for a cover: sv.covered, no frame. The SEND FX pages had the same through 0029's box (its design.md section 19).
+- **Fix:** `sv_page` does not count SceneEditView as a cover; it stays the top view (sv.top_vt), and `blit` (draw_page's
+  two copies of the frame) keeps stock's bottom row over the frame while it is on top: the even words' top bytes (byte 8 x,
+  rows 56..63) stay the canvas's. So the frame shows on the SRC / SMPL page, their page 2 and the SEND FX pages as on the
+  plain page, and the scene edit bar (which scene is edited, how many locks) stays visible - the one thing stock draws over
+  a page there. `overlay()` keeps SceneEditView (UP held is still stock's scene step there, no map). 0026 +78 B of code,
+  no state.
+- **Test** `sfu_emu.py TAG scnedit` (9 checks; 0029's half too): SEND FX 1 with FX16 in scene edit - still page 1 and the
+  page 0029's screen; SRC held + DOWN = page 2/3 and SRC held + UP = page 1, the bar (bottom row) unchanged; DOWN alone =
+  stock's scene step (the bar changes, the rest not); DRAWS 1: the host's frame with stock's bar, and page 2's frame after
+  SRC held + DOWN (29 0C 00, 1C 01); U1 drawn by the host: its frame with the bar on the SRC page and on SRC page 2 (29 20
+  01); SRC page 2 reached in scene edit, SD held + P19: no scene lock (0029's guard); SCNE, SD (no FUNC) still engages
+  scene 2.
+- **Results** [measured; se4 = ag2 (feat/amp-lock-halves 1d0a38d) + this, build.py / verify.py PASS]: `scnedit` 9 / 0 on
+  se4, 1 / 8 on ag2 (only DOWN alone and SRC + UP, which nothing changes, pass there); both bugs reproduced the same way on
+  sfpm3 (the user-machine set) and ag1. Suites on se4: `sfu all` 583 / 0 (ag2 553 / 0 + scnedit), `us all` 371 / 0 (as ag2),
+  `sv all` 124 / 1 - popups' paste check, which fails the same on ag2 (its toast, PopupWindow 0x401d70c8, not
+  this change); rui `scene_report`, `host_cmd_scene`, `save_kit_while_held` 12 / 0 (as ag1). Elekloader RAM: ag2 396 B
+  spare, se4 304 B (+92 B of code: 0026 +78 incl. blit, 0029 +18; .bss unchanged).

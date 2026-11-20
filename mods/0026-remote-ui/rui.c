@@ -772,6 +772,7 @@ static int32_t mr_tick(void) {   /* 1: nothing left to send */
 #define VT_PATSEL    0x401cca04u
 #define VT_SAMPLELED 0x40234cfcu
 #define VT_SCALEMENU 0x401d1e74u   /* 1038: ScaleMenuView, stacked on top while FUNC + PAGE's SCALE menu is open [measured] */
+#define VT_SCENEEDIT 0x401e2c38u   /* scene-edit: SceneEditView (SCNE, FUNC + a pad), its typeinfo "13SceneEditView" [code] */
 #define VT_SAMPLEPAGE 0x401e3170u  /* 1045: SamplePageView, the SMPL page (its typeinfo "14SamplePageView" [code]) */
 #define DSPS_M 45     /* 1045: DSP SAMPLE (0021), its SMP P11 banked; 7h: on knob A of its SRC page, ENG on SMPL D */
 #define DSPS_P 10
@@ -904,7 +905,7 @@ static int32_t sv_page(void *ctrl) {
     if (last == VT_SYNTHPAGE) { found = 1; sv.view = (void *)v; }
     if (last == VT_SAMPLEPAGE) { found |= 2; smp = v; }   /* 1045: the SMPL page; um-draw: a view too (page 2) */
     if (last == VT_PATSEL && ((const uint8_t *)v)[0x7f]) cov = 1;   /* a BANK key held (not +0x84: above) */
-    if (after) {
+    if (after && last != VT_SCENEEDIT) {   /* scene-edit: SceneEditView stays the top, not a cover (blit) */
       for (j = 0; j < (int32_t)(sizeof sv_covers / 4) && sv_covers[j] != last; ++j) ;
       if (j < (int32_t)(sizeof sv_covers / 4) || overlay(last)) cov = 1; else unknown = 1;   /* 1042: any overlay */
     }
@@ -2851,6 +2852,15 @@ static void draw_body(void *bmp, void *ctrl) {
   draw_page(bmp, ctrl);
   if (hdr && (st.active || st.splash_on || sv.show) && !(st.active && st.aside)) hdr_put(px, keep);
 }
+/* scene-edit: the host's frame onto the canvas; in SceneEditView (on top, sv_page) stock's bottom row stays over it:
+   its bar (SCENE n, LOCKS n), the one thing it draws over a page [measured, rytm-emu 1.74: the page's bottom row, BD
+   LEV / the pattern, becomes the bar]. Rows 56..63 are byte 8 x of each column: the top byte of the even words. */
+static void blit(uint32_t *px) {
+  const volatile uint32_t *c = (const volatile uint32_t *)comp;
+  uint32_t k = sv.show && sv.top_vt == VT_SCENEEDIT ? 0xff000000u : 0;   /* (sv.show: not the page, not the splash) */
+  int32_t i;
+  for (i = 0; i < 128; ++i, px += 2, c += 2) { px[0] = (c[0] & ~k) | (px[0] & k); px[1] = c[1]; }
+}
 static void draw_page(void *bmp, void *ctrl) {
   uint32_t *px = *(uint32_t **)((uint8_t *)bmp + 16);   /* canvas(+4 w, +8 h, +16 pixels) 0x4006f9c2 */
   uint32_t c;
@@ -2867,12 +2877,12 @@ static void draw_page(void *bmp, void *ctrl) {
   if (c != st.composed || st.need_comp) {
     if (!compose(c)) {             /* the MIDI task is copying: the last frame again, the new one next tick */
       st.torn++;
-      copy32(px, (const volatile uint32_t *)comp, 256);
+      blit(px);
       return;
     }
     st.need_comp = 0;
   }
-  copy32(px, (const volatile uint32_t *)comp, 256);
+  blit(px);
   if (c != st.shown) {             /* a new frame's first blit: commit -> pixels (the diff follows) */
     uint32_t l = TIMER - t_commit;
     st.cb_sum += l; st.cb_n++;
