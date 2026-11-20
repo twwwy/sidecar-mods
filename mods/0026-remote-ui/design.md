@@ -2956,7 +2956,11 @@ with P5..P16); every knob and key stays the Rytm's (0029's).
 - **State**: `sv.hold`'s bit 7 (no new field); `sv_fxb` (4 B .bss, the box's address).
 - **Cost** (OS 1.74): 0026 code +448 B, .bss +4 B; 0029 code + its box +326 B (with page 1's encoder order, 0029 design.md
   section 16). Full set `sfd1` (on sfpm3's tree) 1608 B elekloader RAM spare (sfpm3 2388 B); `sfd3` (on lock-halves'
-  `lh1`, 1452 B) 672 B spare. The tick's extra work on the FX track: 0029's view walk (<= 16 views, one vtable call).
+  `lh1`, 1452 B) 672 B spare.
+- **Trim (sfd4)**: the SEND FX branch folded into `sv_tick`'s own path (one box read, the 29 / hold / show code shared with
+  the track views), `sv.hold`'s freeze read as a negative int8, the held-step lock asked on SEND FX too (harmless: no 2A
+  goes out for it), the 2B's once-a-second rule as for any view, `3A 0 0` ending a freeze through sv_tick's own exit
+  (hold = FREEZE | 1). Same behaviour, same tests; 0026 code +370 B instead of +448: `sfd4` 748 B spare (`sfd3` 672). The tick's extra work on the FX track: 0029's view walk (<= 16 views, one vtable call).
 
 Tests [measured, rytm-emu 1.74, DTEMU_STRICT=1] `sfu_emu.py sfd1 fxview fxhold` (and `sfd3`) (the host a fixed schedule, as umdraw):
 

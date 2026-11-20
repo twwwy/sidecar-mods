@@ -134,7 +134,7 @@ typedef void (*bmctor_fn)(void *bmp, int32_t w, int32_t h, void *pixels, void *m
 #define NKQ    16
 #define TIMEOUT_TICKS 20                            /* 1 s of the 20 Hz tick without a host message */
 #define HOLD_TICKS 6                                /* um-draw: 300 ms, the last frame over a page change (sv.hold) */
-#define HOLD_FREEZE 0x80                            /* sendfx-draw: sv.hold's flag: the stock screen held (no render) */
+#define HOLD_FREEZE 0x80                            /* sendfx-draw: sv.hold's flag (< 0 as int8): the stock screen held */
 #define HELLO_TICKS 10                              /* 35 this long after the port came up (the host reads by then) */
 #define HELLO_UP    60                              /* 0.4.4: and not before the UI loop has run 3 s (the host's splash rule) */
 #define K_NAV0 0x40       /* LEFT RIGHT UP DOWN YES NO 0x40..0x45 */
@@ -978,25 +978,21 @@ static int32_t sv_paged(int32_t w) {
    its pages, so a change to one keeps what the screen shows until the host's first frame (sv.hold). */
 #define SFX_MB ((const volatile uint32_t *)0x401b9e54u)   /* 0029's mailbox: 'SFXU', sfu_sysex */
 struct sv_fxv { uint32_t magic; int32_t (*view)(void *ctrl); volatile uint8_t draws[2]; };
-static uint32_t sv_fxb;                /* 0029's box, 1 asked and none */
-static const struct sv_fxv *sv_fx(void) {
-  if (!sv_fxb && SFX_MB[0] == 0x53465855u) {
-    uint32_t b = (uint32_t)((int32_t (*)(const uint8_t *, int32_t))SFX_MB[1])(0, 0);
-    sv_fxb = b >> 28 == 4 && !(b & 1) && *(const uint32_t *)b == 0x53465856u ? b : 1;   /* 'SFXV' (m68k: 2-aligned) */
-  }
-  return sv_fxb > 1 ? (const struct sv_fxv *)sv_fxb : 0;
-}
+static uint32_t sv_fxb;                /* 0029's box ('SFXV', 2-aligned); 1 asked and none (an older 0029 answers 1) */
 static int32_t sv_held_step(void);
 static void sv_tick(void *ctrl, uint32_t r) {
-  int32_t t = SEL_TRACK, pg = sv_page(ctrl), on, p = (pg & 4) << 2, d = 0, f0 = sv.hold & HOLD_FREEZE;
+  int32_t t = SEL_TRACK, pg = sv_page(ctrl), on, p = (pg & 4) << 2, d = 0, f0 = (int8_t)sv.hold < 0, x;
   uint8_t m = 0;
-  if (t > 11) {
-    const struct sv_fxv *b = sv_fx();
-    int32_t x = b ? b->view(ctrl) : 0;
+  if (t > 11) {                        /* sendfx-draw: a SEND FX page, as 0029's box says */
+    const struct sv_fxv *b = (const struct sv_fxv *)sv_fxb;
+    if (!b && SFX_MB[0] == 0x53465855u) {
+      b = (const struct sv_fxv *)((int32_t (*)(const uint8_t *, int32_t))SFX_MB[1])(0, 0);
+      if (((uint32_t)b & 1) || b->magic != 0x53465856u) b = (const struct sv_fxv *)1;
+      sv_fxb = (uint32_t)b;
+    }
     pg = 0;
-    if (x) { t = x & 15; p = x & 0x30; pg = x & 0x40 ? 2 : 1; d = b->draws[t - 12]; sv.view = 0; }   /* sendfx-draw */
-  }
-  if (pg && t < 12) m = MACHINE_OF(t);
+    if ((uint32_t)b > 1 && (x = b->view(ctrl)) != 0) { t = x & 15; p = x & 0x30; pg = x & 0x40 ? 2 : 1; d = b->draws[t - 12]; sv.view = 0; }
+  } else if (pg) m = MACHINE_OF(t);
   pg &= 3;
   /* um-draw: the view's page, 1 SRC / 2 SMPL, 3 / 4 their page 2 on a U slot (0029's records: no P1..P16 on the knobs,
      the values the kit's words); the SMPL page's own values only on a U slot (knob k = P9 + k) */
@@ -1004,15 +1000,15 @@ static void sv_tick(void *ctrl, uint32_t r) {
   else if (pg && sv_paged(p >> 4)) { p += 0x20; sv.view = 0; }
   on = pg && (t > 11 || mr_vb(t, m) != 0x7f);
   if (on && (!sv.on || sv.track != t || sv.mach != m || sv.pg != p)) {
-    if (sv.on && (sv.pg != p || (sv.track != t && (t > 11 || sv.track > 11)))) { sv.poff = sv.p_track; sv.pend29 |= 2; }
+    if (sv.on && (sv.pg != p || (t > 11) != (sv.track > 11))) { sv.poff = sv.p_track; sv.pend29 |= 2; }
                                        /* um-draw: the old page's off first, so an older host (it drops a paged 29)
                                           ends its SRC view; sendfx-draw: so too between a track's view and SEND FX */
     /* um-draw: a U slot's page change with the host's frame up: that frame stays until the new view's first commit (no
-       stock page flashed in the ~50..125 ms the 29 and the host's whole frame take), HOLD_TICKS at most */
-    sv.hold = sv.show && sv.on && sv.track == t && sv.mach == m && (uint32_t)(m - 35) < 5u ? HOLD_TICKS : 0;
-    /* sendfx-draw: a change to a SEND FX page whose effect draws (DRAWS 1), from whatever showed: the host's frame up
-       stays as above; a stock screen stays by no render at all (HOLD_FREEZE: the tick clears the dirty flag) */
-    if (d && !st.active && !st.splash_on && sv.idle < TIMEOUT_TICKS) sv.hold = (uint8_t)(sv.show ? HOLD_TICKS : HOLD_TICKS | HOLD_FREEZE);
+       stock page flashed in the ~50..125 ms the 29 and the host's whole frame take), HOLD_TICKS at most. sendfx-draw: so
+       too a change to a SEND FX page whose effect draws (DRAWS 1), from whatever showed; a stock screen stays by no render
+       at all (HOLD_FREEZE, sv.hold < 0 as int8: the tick clears the dirty flag) */
+    sv.hold = (uint8_t)(!d && !(sv.track == t && sv.mach == m && (uint32_t)(m - 35) < 5u) ? 0 : sv.show ? HOLD_TICKS :
+                        d && !st.active && !st.splash_on && sv.idle < TIMEOUT_TICKS ? HOLD_TICKS | HOLD_FREEZE : 0);
     sv.on = 1; sv.track = (uint8_t)t; sv.mach = m; sv.pg = (uint8_t)p;
     sv.base = commits;
     sv.pend29 |= 1; sv.p_track = (uint8_t)(t | p); sv.p_on = 1; sv.vals_all = 1;
@@ -1023,20 +1019,17 @@ static void sv_tick(void *ctrl, uint32_t r) {
     sv.ends++;
   }
   sv.covered = pg == 2;
-  sv.lock = sv.on && pg == 1 && sv.pg < 0x20 && sv.track < 12 ? sv_held_step() : -1;   /* 1027e (um-draw: P1..P8 /
-                                          P9..P16 by the page; sendfx-draw: none on SEND FX) */
+  sv.lock = sv.on && pg == 1 && sv.pg < 0x20 ? sv_held_step() : -1;   /* 1027e (um-draw: P1..P8 / P9..P16 by the page) */
   if (r != sv.rx_seen) sv.idle = 0; else if (sv.idle < 0xffff) sv.idle++;
   sv.rx_seen = r;
-  if (commits != sv.base || !sv.on || st.active || st.splash_on) sv.hold = 0; else if (sv.hold & 0x7f) sv.hold--;
-  if (sv.hold == HOLD_FREEZE) sv.hold = 0;   /* (a freeze's last tick: the new page's own screen) */
-  sv.show = sv.on && !sv.covered && (commits != sv.base || (sv.hold && !(sv.hold & HOLD_FREEZE))) &&
+  if (commits != sv.base || !sv.on || st.active || st.splash_on || (sv.hold && --sv.hold == HOLD_FREEZE)) sv.hold = 0;
+  sv.show = sv.on && !sv.covered && (commits != sv.base || (int8_t)sv.hold > 0) &&
             sv.idle < TIMEOUT_TICKS && !st.active && !st.splash_on;
-  if (f0 && !(sv.hold & HOLD_FREEZE)) *((volatile uint8_t *)ctrl + 0x20) = 1;   /* a freeze over: render again */
+  if (f0 && (int8_t)sv.hold >= 0) *((volatile uint8_t *)ctrl + 0x20) = 1;   /* a freeze over: render again */
   {                                    /* 1027d: 2B's state byte; owed on a change, and each second on the SRC page */
     uint8_t d = (uint8_t)(sv.on | sv.covered << 1 | (commits != sv.base) << 2 | (sv.idle >= TIMEOUT_TICKS) << 3 |
                           (st.active ? 1 : 0) << 4 | (st.splash_on ? 1 : 0) << 5 | sv.show << 6);
-    if (d != sv.diag_sent || sv.top_vt != sv.diag_vt_sent_w || (pg && t < 12 && (int32_t)(st.ticks - sv.diag_tick) >= 20))
-      sv.diag_owed = 1;
+    if (d != sv.diag_sent || sv.top_vt != sv.diag_vt_sent_w || (pg && (int32_t)(st.ticks - sv.diag_tick) >= 20)) sv.diag_owed = 1;
     sv.diag = d;
   }
   if (sv.show != sv.was_show) {        /* in or out: the views redraw (stock's, then ours over them) */
@@ -2665,7 +2658,7 @@ static void tick_body(void *ctrl) {
   }
   if (host_close) {                  /* 1027: also the view's; sendfx-draw: and a hold ends at once (no frame comes) */
     host_close = 0; host_open = 0; sv.base = commits;
-    if (sv.hold) { sv.hold = 0; *((volatile uint8_t *)ctrl + 0x20) = 1; }
+    if (sv.hold) sv.hold = HOLD_FREEZE | 1;   /* (sv_tick ends it this tick and renders again) */
     leave(ctrl, R_HOST);
   }
   if (host_open) { host_open = 0; enter(ctrl, R_HOST, 0); }
@@ -2760,7 +2753,7 @@ static void tick_body(void *ctrl) {
     sv_flush();
     arp_tick();
   }
-  if (sv.hold & HOLD_FREEZE) *((volatile uint8_t *)ctrl + 0x20) = 0;   /* sendfx-draw: the screen held: no render */
+  if ((int8_t)sv.hold < 0) *((volatile uint8_t *)ctrl + 0x20) = 0;   /* sendfx-draw: the screen held: no render */
 }
 
 /* ---- text: the shadow + the committed text slots (+ the local echoes) drawn by the Rytm's own text_draw ---------- */
