@@ -24,7 +24,7 @@ sets' read / write / lock entries wrapped so two knobs share a word); TYPE and P
 TYPE shows the Sidecar's names (host-link 21) and !NAME for a missing effect (22); P1 is ROUT
 (PRE 0..63 / POST 64..127); P2..P5 take the Sidecar's per-TYPE labels and zone names (24), else
 P2..P5 and numbers. The ASK never waits on USB (try-lock). Needs
-0025-sendfx-report (FX 38..41 storage) and 0022 sfx=1 for the names. 0.5.0: knobs G / H are
+0025-sendfx-report (FX 38..41 storage) and 0022 sfx=1 for the names. 0.5.0: knobs G / H (sendfx-draw: C / D, the effect's P1..P4 on E..H) are
 BASE / WID, each send FX's return filter, held by the Sidecar (host-link 22 ver 2 both ways,
 records 1..4, never stored in the kit, no locks). Full names in the upper left (51). A user
 effect with P5..P16 gets pages 2 / 3 (SRC / SMPL held + DOWN / UP; held by the Sidecar, 22 ver 3,

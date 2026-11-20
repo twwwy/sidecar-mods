@@ -118,9 +118,14 @@ struct page { const char *name; uint32_t id[8]; };
 /* (sendfx-pages: written at run time - the title "SEND FX 1 2/3" and page 3's empty knobs E..H) */
 struct page sfu_pages[3] = {
   {n_amp2, {ID0 + 0, ID0 + 1, 0, 0, 0, 0, 0, 0}},
-  {n_fx1, {ID0 + 2, ID0 + 3, ID0 + 4, ID0 + 5, ID0 + 6, ID0 + 7, BW0 + 0, BW0 + 1}},
-  {n_fx2, {ID0 + 8, ID0 + 9, ID0 + 10, ID0 + 11, ID0 + 12, ID0 + 13, BW0 + 2, BW0 + 3}},
+  {n_fx1, {ID0 + 2, ID0 + 3, BW0 + 0, BW0 + 1, ID0 + 4, ID0 + 5, ID0 + 6, ID0 + 7}},
+  {n_fx2, {ID0 + 8, ID0 + 9, BW0 + 2, BW0 + 3, ID0 + 10, ID0 + 11, ID0 + 12, ID0 + 13}},
 };
+/* sendfx-draw (the Sidecar's docs/um-pages.md "An effect's pages"): page 1's encoders A TYPE, B ROUTE, C BASE, D WIDTH,
+   E..H the effect's P1..P4 (the Rytm's P2..P5; before: C..F P2..P5, G / H BASE / WIDTH). Only which encoder shows which
+   record: the records, their words, locks and labels are as before. p1slot[e]: the record slot (slot_of's 0 TYPE, 1 ROUTE,
+   2..5 P2..P5, 6 / 7 BASE / WIDTH) on encoder e. Pages 2 / 3 keep slot s on encoder s (apply_page). */
+static const uint8_t p1slot[8] = {0, 1, 6, 7, 2, 3, 4, 5};
 /* the three views' page vectors (view factory 0x400ca9b2), count 2 each */
 const uint32_t sfu_vec_amp[2] = {7, 12}, sfu_vec_del[2] = {8, 13}, sfu_vec_rev[2] = {9, 14};
 
@@ -1008,7 +1013,10 @@ static void restore_recs(int32_t k) {
   set_look(3 + 6 * k, 3, 2);   /* P1 ROUTE: PRE / POST */
   set_bw_rec(2 * k);
   set_bw_rec(2 * k + 1);
-  for (s = 0; s < 8; ++s) sfu_pages[1 + k].id[s] = s < 6 ? (uint32_t)(ID0 + 2 + 6 * k + s) : (uint32_t)(BW0 + 2 * k + s - 6);
+  for (s = 0; s < 8; ++s) {
+    i = p1slot[s];
+    sfu_pages[1 + k].id[s] = i < 6 ? (uint32_t)(ID0 + 2 + 6 * k + i) : (uint32_t)(BW0 + 2 * k + i - 6);
+  }
 }
 /* sendfx-pages: FX k's 8 records as page PG.pg[k]'s knobs (>= 1): P(5 + 8 (pg - 1) + s), plain dials 0..127, the 51's
    names (the upper left: the full name, else "Send FX n"); a knob past the effect's last is empty (id 0: the stock page
@@ -1193,7 +1201,7 @@ struct sfu_fxv {
   int32_t (*view)(void *ctrl);
   volatile uint8_t draws[2];
   uint8_t pad[2];
-} sfu_fxv = {FXV_MAGIC, fxv_view, {0, 0}, {0, 0}};
+} sfu_fxv __attribute__((aligned(4))) = {FXV_MAGIC, fxv_view, {0, 0}, {0, 0}};
 static void fxv_draws(int32_t fx, int32_t on) { sfu_fxv.draws[fx] = (uint8_t)on; }
 static int32_t fxv_view(void *ctrl) {
   const uint8_t *c = (const uint8_t *)ctrl;

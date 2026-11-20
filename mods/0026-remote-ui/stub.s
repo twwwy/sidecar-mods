@@ -5200,12 +5200,10 @@ sv_tick:
 	jra .L793
 .L821:
 	move.l %a2,%d0
-	mov3q.l #3,%d1
-	and.l %d1,%d0
-	tst.l %d0
+	btst #0,%d0
 	jne .L822
-	move.l #1397119062,%d5
-	cmp.l (%a2),%d5
+	move.l #1397119062,%d1
+	cmp.l (%a2),%d1
 	jne .L822
 	move.l %a2,sv_fxb
 .L823:
@@ -5226,8 +5224,8 @@ sv_tick:
 .L825:
 	mvz.b -4(%a2,%d4.l),%d6
 	clr.l sv+80
-	moveq #11,%d0
-	cmp.l %d4,%d0
+	moveq #11,%d7
+	cmp.l %d4,%d7
 	jlt .L948
 .L826:
 	moveq #127,%d0
@@ -5239,14 +5237,14 @@ sv_tick:
 	mulu.w #152,%d0
 	move.b (%a0,%d0.l),%d5
 .L824:
-	mvz.b %d5,%d7
-	mov3q.l #3,%d1
-	and.l %d1,%d2
+	mvz.b %d5,%d1
+	mov3q.l #3,%d0
+	and.l %d0,%d2
 	lea sv,%a3
-	mov3q.l #4,%d0
-	move.l %d7,%a2
+	mov3q.l #4,%d7
+	move.l %d1,%a2
 	lea (-35,%a2),%a5
-	cmp.l %a5,%d0
+	cmp.l %a5,%d7
 	jcc .L827
 	tst.l %d3
 	jeq .L828
@@ -5267,8 +5265,8 @@ sv_tick:
 	move.b %d0,sv+4
 	jra .L841
 .L819:
-	mov3q.l #1,%d7
-	cmp.l %a2,%d7
+	mov3q.l #1,%d5
+	cmp.l %a2,%d5
 	jne .L823
 	jra .L820
 .L875:
@@ -5289,8 +5287,8 @@ sv_tick:
 	move.l sv_umb,%d0
 	tst.l %d0
 	jne .L830
-	move.l #1481856080,%d1
-	cmp.l 1073848892.l,%d1
+	move.l #1481856080,%a0
+	cmp.l 1073848892.l,%a0
 	jne .L835
 	move.l 1073848896,%a0
 	moveq #28,%d7

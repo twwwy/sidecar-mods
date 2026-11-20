@@ -750,7 +750,8 @@ The Sidecar's docs/um-pages.md "An effect's pages": a user effect may draw SEND 
 (29 track 12 / 13 with the page) and shows the host's frame (0026 design.md "sendfx-draw"). 0029's part is small and
 separate from its knob, lock and storage code:
 
-- **`sfu_fxv`** (`SFXV`, 12 B, initialised data): `view(ctrl)` and `draws[2]`. 0026 gets its address from
+- **`sfu_fxv`** (`SFXV`, 12 B, initialised data, `aligned(4)`; 0026 takes any even address: m68k's own alignment is 2, and
+  a first build on lock-halves put it at ...76, which a 4-byte check refused, so no SEND FX view at all) [measured]: `view(ctrl)` and `draws[2]`. 0026 gets its address from
   `sfu_sysex(0, 0)` (the mailbox's existing function; a NULL message is otherwise impossible, and an older 0029 answers 1
   for it: len 0 is dropped), so no new fixed address or symbol is shared.
 - **`view(ctrl)`** (UI task): walks the view list (ctrl + 28) as `top_page` does; a view before SamplerLedView whose
@@ -763,7 +764,12 @@ separate from its knob, lock and storage code:
 - **22 ver 4 SENDFX DRAWS** `F0 7D 52 54 22 04 <fx> <on> F7` (9 bytes, fx and on 0 / 1, else dropped), from 0022's router
   as ver 2 / 3: `draws[fx] = on`. The tick sets both to 0 while the USB port is down (`PORT_STATE` != 1), so a host that
   never draws is not held for.
-- The encoder order of page 1 (the spec's C / D = BASE / WIDTH, E..H = P1..P4) is **not changed here**
-  yet: it waits for `feat/sendfx-lock-halves`, which changes the same knob code (TODO).
+- **Page 1's encoder order** is the spec's: A TYPE, B ROUTE, C BASE, D WIDTH, E..H the effect's P1..P4 (the Rytm's
+  P2..P5; before: C..F P2..P5, G / H BASE / WIDTH). Only the page descriptor's ids moved (`sfu_pages` and `restore_recs`,
+  through `p1slot`): the records, their kit words, their locks (section 15), labels and texts are the same records as before,
+  now on other encoders. Pages 2 / 3 unchanged (slot s on encoder s). The emulator suites' turns on page 1 go through
+  `sfu_emu.py K1` (each record slot's encoder); `bw2`'s dial region is knob C's.
 
-Tests: `sfu_emu.py sfd1 fxview fxhold` (0026's set; 0026 design.md "sendfx-draw").
+Tests: `sfu_emu.py sfd3 fxview fxhold` (0026's set; 0026 design.md "sendfx-draw"), and every earlier test on page 1 with
+the new order (`sfu_emu.py sfd3 all`, `halves` included). Full set `sfd3` (this on `lh1`): 672 B elekloader RAM left
+(`lh1` 1452 B).

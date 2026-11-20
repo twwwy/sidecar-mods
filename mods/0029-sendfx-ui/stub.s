@@ -1671,24 +1671,23 @@ set_look:
 	.align	2
 	.type	restore_recs, @function
 restore_recs:
-	lea (-40,%sp),%sp
-	movem.l #7420,(%sp)
-	move.l 44(%sp),%d2
-	move.w %d2,%d6
-	muls.w #6,%d6
-	move.l %d6,%d0
-	addq.l #2,%d0
-	move.l %d0,36(%sp)
+	lea (-36,%sp),%sp
+	movem.l #15420,(%sp)
+	move.l 40(%sp),%d2
+	move.w %d2,%d0
+	muls.w #6,%d0
+	move.l %d0,%a3
+	lea (2,%a3),%a0
+	move.l %a0,32(%sp)
 	btst #0,%d2
 	jeq .L256
-	move.l #sfu_type2_text,%d7
+	move.l #sfu_type2_text,%d5
 .L257:
 	move.w %d2,%d3
-	mvz.w %d2,%d4
-	clr.l %d5
-	lea set_rec,%a4
-	move.l #1100631360,%a3
-	move.l %d4,%d0
+	mvz.w %d2,%d0
+	clr.l %d4
+	lea set_rec,%a5
+	move.l #1100631360,%a4
 	lsl.l #4,%d0
 	mulu.w #6,%d3
 	move.l %d0,%a2
@@ -1696,80 +1695,76 @@ restore_recs:
 	addq.l #2,%d3
 .L260:
 	move.l %d3,-(%sp)
-	jsr (%a4)
+	jsr (%a5)
 	addq.l #4,%sp
-	tst.l %d5
-	jeq .L263
-	mov3q.l #1,%d1
-	cmp.l %d5,%d1
+	tst.l %d4
+	jeq .L264
+	mov3q.l #1,%d0
+	cmp.l %d4,%d0
 	jeq .L259
 	move.l -8(%a2),%d0
 .L258:
 	moveq #84,%d1
-	addq.l #1,%d5
+	addq.l #1,%d4
 	muls.l %d3,%d1
 	addq.l #1,%d3
 	addq.l #4,%a2
-	move.l %d0,(%a3,%d1.l)
-	mov3q.l #6,%d0
-	cmp.l %d5,%d0
+	move.l %d0,(%a4,%d1.l)
+	mov3q.l #6,%d1
+	cmp.l %d4,%d1
 	jne .L260
-	mvs.w %d2,%d3
 	mov3q.l #2,-(%sp)
 	mov3q.l #1,-(%sp)
-	move.l 44(%sp),-(%sp)
-	add.l %d3,%d3
+	move.l 40(%sp),-(%sp)
 	lea set_look,%a2
-	addq.l #1,%d2
 	jsr (%a2)
 	mov3q.l #2,-(%sp)
 	mov3q.l #3,-(%sp)
+	pea 3(%a3)
+	jsr (%a2)
+	mvs.w %d2,%d0
+	addq.l #1,%d2
+	lea set_bw_rec,%a4
 	mulu.w #36,%d2
-	move.l %d6,%a0
-	pea 3(%a0)
-	jsr (%a2)
-	lea set_bw_rec,%a2
-	move.l %d3,-(%sp)
-	jsr (%a2)
-	move.l %d3,%a0
-	pea 1(%a0)
-	jsr (%a2)
-	lea (32,%sp),%sp
-	move.l %d4,%d0
-	move.l %d2,%a0
 	add.l %d0,%d0
-	lsl.l #2,%d4
-	add.l #sfu_pages+4,%a0
-	move.l %d0,%a1
+	move.l %d0,-(%sp)
+	move.l %d0,%a2
+	addq.l #1,%a2
+	jsr (%a4)
+	move.l %a2,-(%sp)
+	jsr (%a4)
+	lea (32,%sp),%sp
+	lea p1slot,%a4
+	move.l %d2,%a0
 	clr.l %d0
-	subq.l #5,%a1
+	add.l #sfu_pages+4,%a0
+.L263:
+	mvz.b (%a4,%d0.l),%d1
+	mov3q.l #5,%d2
+	cmp.l %d1,%d2
+	jlt .L261
+	lea 16(%a3,%d1.l),%a1
 .L262:
-	mov3q.l #5,%d1
-	cmp.l %d0,%d1
-	jlt .L264
-	lea 21(%a1,%d4.l),%a2
-.L261:
-	move.l %a2,(%a0)+
+	move.l %a1,(%a0)+
 	moveq #8,%d1
 	addq.l #1,%d0
-	addq.l #1,%a1
 	cmp.l %d0,%d1
-	jne .L262
-	movem.l (%sp),#7420
-	lea (40,%sp),%sp
+	jne .L263
+	movem.l (%sp),#15420
+	lea (36,%sp),%sp
 	rts
 .L256:
-	move.l #sfu_type1_text,%d7
+	move.l #sfu_type1_text,%d5
 	jra .L257
 .L259:
 	move.l #sfu_route_text,%d0
 	jra .L258
-.L263:
-	move.l %d7,%d0
-	jra .L258
 .L264:
-	move.l %a1,%a2
-	jra .L261
+	move.l %d5,%d0
+	jra .L258
+.L261:
+	lea -6(%a2,%d1.l),%a1
+	jra .L262
 	.size	restore_recs, .-restore_recs
 	.text
 .LC0:
@@ -5559,7 +5554,7 @@ m.0:
 	.base64	"8H1SVCMB9w=="
 	.globl	sfu_fxv
 	.text
-	.align	2
+	.align	4
 	.type	sfu_fxv, @object
 	.size	sfu_fxv, 12
 sfu_fxv:
@@ -5652,6 +5647,10 @@ sfu_vec_del:
 sfu_vec_amp:
 	.long	7
 	.long	12
+	.type	p1slot, @object
+	.size	p1slot, 8
+p1slot:
+	.base64	"AAEGBwIDBAU="
 	.globl	sfu_pages
 	.text
 	.align	2
@@ -5670,21 +5669,21 @@ sfu_pages:
 	.long	n_fx1
 	.long	16
 	.long	17
+	.long	1
+	.long	2
 	.long	18
 	.long	19
 	.long	20
 	.long	21
-	.long	1
-	.long	2
 	.long	n_fx2
 	.long	22
 	.long	23
+	.long	3
+	.long	4
 	.long	24
 	.long	25
 	.long	26
 	.long	27
-	.long	3
-	.long	4
 	.text
 	.type	n_fx2, @object
 	.size	n_fx2, 10

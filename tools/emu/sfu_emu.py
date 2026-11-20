@@ -29,6 +29,11 @@ LOCKS = X.LIVE_LOCKS                # working pattern live locks: + 5674 t + 88 
 INCR, REBUILD = 0x4000940c, 0x40009216
 
 
+# sendfx-draw: SEND FX page 1's encoder of each record slot - 0 TYPE, 1 ROUTE, 2..5 the Rytm's P2..P5 (the effect's
+# P1..P4), 6 BASE, 7 WIDTH: A TYPE, B ROUTE, C BASE, D WIDTH, E..H P2..P5 (before: C..F P2..P5, G / H BASE / WIDTH)
+K1 = [0, 1, 4, 5, 6, 7, 2, 3]
+
+
 def w16(e, snap, a):
     return int.from_bytes(e.peek(snap, a, 2), "big")
 
@@ -68,9 +73,9 @@ def t_pages(e):
     print(f"    SFX1 {w >> 8} SFX2 {(w >> 1) & 0x7f}")
     fx0 = {i: w16(e, s0, FXW + 2 * i) for i in (0, 9, 29, 38, 39, 40, 41)}
     ev = [(50, "press", "FX"), (150, "press", "SRC"), (300, "turn", ("0:+20", 2, 20)), (400, "turn", ("1:+20", 3, 20)),
-          (500, "turn", ("2:+20", 4, 20)), (600, "turn", ("5:+20", 2, 20)),
+          (500, "turn", (f"{K1[2]}:+20", 4, 20)), (600, "turn", (f"{K1[5]}:+20", 2, 20)),
           (700, "press", "SMPL"), (800, "press", "SMPL"), (900, "turn", ("0:+20", 3, 20)),
-          (1000, "turn", ("3:+20", 2, 20)), (1100, "turn", ("4:+20", 2, 20)),
+          (1000, "turn", (f"{K1[3]}:+20", 2, 20)), (1100, "turn", (f"{K1[4]}:+20", 2, 20)),
           (1200, "press", "SRC"), (1300, "press", "SRC"), (1400, "press", "SRC"), (1500, "turn", ("0:+20", 3, 20))]
     s = e.run("pages-fx", 1700, ev, save=True)
     fx = {i: w16(e, s, FXW + 2 * i) for i in fx0}
@@ -124,9 +129,9 @@ def t_locks(e):
     ev = [(50, "press", "AMP"), (150, "press", "AMP"), (200, "turn", ("1:+20", 2, 20)),
           (250, "press", "RECORD"), (350, "press", "T1"),
           (450, "press", "T5"), (600, "press", "T1:500M"), (700, "turn", ("0:+20", 3, 20)), (850, "turn", ("1:+20", 2, 20)),
-          (1200, "press", "FX"), (1300, "press", "SRC"), (1350, "turn", ("1:+20", 2, 20)), (1380, "turn", ("4:+20", 2, 20)),
+          (1200, "press", "FX"), (1300, "press", "SRC"), (1350, "turn", ("1:+20", 2, 20)), (1380, "turn", (f"{K1[4]}:+20", 2, 20)),
           (1450, "press", "T1"), (1550, "press", "T5"),
-          (1650, "press", "T1:500M"), (1750, "turn", ("2:+20", 3, 20)), (1900, "turn", ("0:+20", 2, 20)),
+          (1650, "press", "T1:500M"), (1750, "turn", (f"{K1[2]}:+20", 3, 20)), (1900, "turn", ("0:+20", 2, 20)),
           (2300, "press", "RECORD")]
     s = e.run("locks", 2500, ev, save=True, count=[INCR, REBUILD])
     incr, rb = e.counts.get(INCR, 0), e.counts.get(REBUILD, 0)
@@ -258,15 +263,15 @@ def stored_slot(e, snap, typ, track=12, pat=X.B0):
 
 
 def t_halves(e):
-    """lock-halves: SEND FX 1's P1 and P2 (the effect's; the page's C and D: FX word 38 hi / lo) lock independently. A
+    """lock-halves: SEND FX 1's P1 and P2 (the effect's; the page's E and F since sendfx-draw: FX word 38 hi / lo) lock independently. A
     lock on P1 leaves P2 following the kit; a lock on P2 too keeps both; clearing P1 (T1 held + its encoder pushed)
     leaves P2's lock; playback plays the locked half with the kit's other half; power-off / cold boot and SAVE PROJECT /
     LOAD PROJECT keep each half (stored types 42 / 46, 0xff where a half is not locked)."""
     base = lambda s: w16(e, s, FXW + 76)   # kit 0's FX word 38
     # SEND FX 1, base P1 (C) and P2 (D), RECORD, trigs on steps 1 and 5, step 1 held: P1 locked
-    ev = [(50, "press", "FX"), (150, "press", "SRC"), (250, "turn", ("2:+20", 3, 20)), (350, "turn", ("3:+20", 2, 20)),
+    ev = [(50, "press", "FX"), (150, "press", "SRC"), (250, "turn", (f"{K1[2]}:+20", 3, 20)), (350, "turn", (f"{K1[3]}:+20", 2, 20)),
           (450, "press", "RECORD"), (550, "press", "T1"), (650, "press", "T5"),
-          (800, "press", "T1:400M"), (900, "turn", ("2:+20", 3, 20))]   # (RECORD stays on: a held trig locks)
+          (800, "press", "T1:400M"), (900, "turn", (f"{K1[2]}:+20", 3, 20))]   # (RECORD stays on: a held trig locks)
     t = e.clock
     s1 = e.run("halves-p1", 1400, ev, save=True)
     t += 1400
@@ -277,13 +282,13 @@ def t_halves(e):
             lock(e, s1, 12, 4, 38) == 0xffff and fine(e, s1, 12, 38) == 1,
             f"lock {w1:04x} base {b1:04x} fine {fine(e, s1, 12, 38)}")
     # P2's base turned: the step still has no P2 lock (it follows the kit), P1's lock unchanged
-    s2 = e.run("halves-base", 300, [(50, "turn", ("3:+20", 3, 20))], snap=s1, start=t, save=True)
+    s2 = e.run("halves-base", 300, [(50, "turn", (f"{K1[3]}:+20", 3, 20))], snap=s1, start=t, save=True)
     t += 300
     b2, w2 = base(s2), lock(e, s2, 12, 0, 38)
     U.check("halves: P2's base turned - the kit's lo half moved, step 1's lock still P1 only with P1's value",
             (b2 & 0xfe) != (b1 & 0xfe) and (b2 >> 8) == (b1 >> 8) and w2 == w1, f"base {b1:04x} -> {b2:04x} lock {w2:04x}")
     # P2 locked too, on the same step: both halves, each its own value
-    s3 = e.run("halves-p2", 500, [(50, "press", "T1:300M"), (150, "turn", ("3:-20", 2, 20))], snap=s2, start=t,
+    s3 = e.run("halves-p2", 500, [(50, "press", "T1:300M"), (150, "turn", (f"{K1[3]}:-20", 2, 20))], snap=s2, start=t,
                save=True)
     t += 500
     w3 = lock(e, s3, 12, 0, 38)
@@ -291,15 +296,15 @@ def t_halves(e):
     U.check("halves: P2 locked on step 1 too - both halves, P1's value kept, P2's not the base's",
             h3 == h1 and l3 is not None and l3 != (b2 >> 1 & 0x7f), f"lock {w3:04x} base {b2:04x}")
     l3 = l3 or 0   # (a baseline build fails the check above; the rest still runs)
-    # P1's lock cleared alone: T1 held, C (P1's encoder) pushed
-    s4 = e.run("halves-clear", 500, [(50, "press", "T1:300M"), (150, "press", "PUSH_C:60M")], snap=s3, start=t,
+    # P1's lock cleared alone: T1 held, P1's encoder (E; C before sendfx-draw) pushed
+    s4 = e.run("halves-clear", 500, [(50, "press", "T1:300M"), (150, "press", "PUSH_" + "ABCDEFGH"[K1[2]] + ":60M")], snap=s3, start=t,
                save=True)
     t += 500
     w4 = lock(e, s4, 12, 0, 38)
-    U.check("halves: P1's lock cleared alone (T1 + PUSH C) - step 1 keeps P2's lock, P1 plays the kit again",
+    U.check("halves: P1's lock cleared alone (T1 + P1's encoder pushed) - step 1 keeps P2's lock, P1 plays the kit again",
             lk(w4) == (None, l3) and base(s4) == b2, f"lock {w4:04x} (was {w3:04x})")
     # step 5: P1 locked alone (its P2 the kit's)
-    s4 = e.run("halves-p1s5", 500, [(50, "press", "T5:300M"), (150, "turn", ("2:+20", 4, 20))], snap=s4, start=t,
+    s4 = e.run("halves-p1s5", 500, [(50, "press", "T5:300M"), (150, "turn", (f"{K1[2]}:+20", 4, 20))], snap=s4, start=t,
                save=True)
     t += 500
     h5, l5 = lk(lock(e, s4, 12, 4, 38))
@@ -316,7 +321,7 @@ def t_halves(e):
     U.check(f"halves: PLAY - the reports alternate step 1 {want1:04x} (kit P1, locked P2) and step 5 {want5:04x} "
             "(locked P1, kit P2)", want1 in fx and want5 in fx and b2 not in fx[1:] and len(fx) >= 3,
             " ".join("%04x" % v for v in fx[:8]))
-    s6 = e.run("halves-base2", 300, [(50, "turn", ("2:-20", 2, 20)), (150, "turn", ("3:+20", 2, 20))], snap=s5,
+    s6 = e.run("halves-base2", 300, [(50, "turn", (f"{K1[2]}:-20", 2, 20)), (150, "turn", (f"{K1[3]}:+20", 2, 20))], snap=s5,
                start=t, save=True)
     t += 300
     b6 = base(s6)
@@ -386,7 +391,7 @@ def t_labels(e):
     msgs = b"".join(names) + label_msgs((1, 2, 6, 8, 15))
     # FX 1 RINGS: SEND FX 1, P3 (knob D) up into STRINGS, P1 (knob B) to POST
     ev = [(20, "usb", msgs), (50, "press", "FX"), (150, "press", "SRC"), (200, "turn", ("1:+20", 22, 4)),
-          (350, "turn", ("3:+20", 22, 4))]
+          (350, "turn", (f"{K1[3]}:+20", 22, 4))]
     s = e.run("labels-rings", 470, ev, save=True, extra=poke_type(e, 0, 6))
     a = sym(e, "sfu_x")
     cnt = [e.u32(s, a + X_CNT + 4 * i) for i in range(6)]
@@ -403,14 +408,14 @@ def t_labels(e):
           "labels-rings.png")
     # TYPE change by the knob to STUTTER on SEND FX 2 (SMPL SMPL), P3 into 1/16
     ev = [(20, "usb", msgs), (50, "press", "FX"), (150, "press", "SMPL"), (250, "press", "SMPL"),
-          (350, "turn", ("3:+20", 8, 4))]
+          (350, "turn", (f"{K1[3]}:+20", 8, 4))]
     s = e.run("labels-stutter", 420, ev, save=True, extra=poke_type(e, 1, 15))
     U.check("labels: SEND FX 2 on STUTTER shows ENG LEN D/P GATE", lbl(e, s, 1) == ["ENG", "LEN", "D/P", "GATE"],
             str(lbl(e, s, 1)))
     p3 = (w16(e, s, FXW + 2 * 40) & 0xfe) >> 1
     print(f"    P3 = {p3} -> {P.sendfx_value_text(15, 1, p3)!r}; screen labels-stutter.png")
     # no labels: generic P2..P5 and numbers (the stock dial), P1 PRE
-    ev = [(20, "usb", b"".join(names)), (50, "press", "FX"), (150, "press", "SRC"), (350, "turn", ("3:+20", 8, 4))]
+    ev = [(20, "usb", b"".join(names)), (50, "press", "FX"), (150, "press", "SRC"), (350, "turn", (f"{K1[3]}:+20", 8, 4))]
     s = e.run("labels-none", 550, ev, save=True, extra=poke_type(e, 0, 6))
     U.check("labels: without a 24, RINGS keeps P2..P5 generic", lbl(e, s, 0) == ["P2", "P3", "P4", "P5"], str(lbl(e, s, 0)))
     # a 21 with replace clears them
@@ -441,7 +446,7 @@ def t_fullnames(e):
     full = full_msgs((1, 2, 6, 8, 15))
     a = sym(e, "sfu_x")
     # FX 1 RINGS, FX 2 OFF; P2 (knob C) turned so the upper left shows its name in the screen
-    ev = [(20, "usb", names + labels + full), (50, "press", "FX"), (150, "press", "SRC"), (300, "turn", ("2:+8", 3, 10))]
+    ev = [(20, "usb", names + labels + full), (50, "press", "FX"), (150, "press", "SRC"), (300, "turn", (f"{K1[2]}:+8", 3, 10))]
     s = e.run("fullnames-rings", 450, ev, save=True, extra=poke_type(e, 0, 6))
     cnt = [e.u32(s, a + X_CNT + 4 * i) for i in range(6)]
     U.check("fullnames: 0029 took the five 24s", cnt[2] == 5 and cnt[1] == 0, f"counters {cnt}")
@@ -556,7 +561,7 @@ def t_xpages(e):
     U.check("xpages: no cycling (DOWN on page 3 stays), UP back to page 1: TYPE ROUT MOD LEV P3 P4 BASE WID, ids restored",
             g["pg"][0] == 0 and g["ttl"] == "SEND FX 1 1/3" and [n[0] for n in nm] == ["TYPE", "ROUT", "MOD", "LEV", "P3",
                                                                                       "P4", "BASE", "WID"] and
-            page_ids(e, s, 0) == [16, 17, 18, 19, 20, 21, 1, 2], f"{g} {nm} {page_ids(e, s, 0)}")
+            page_ids(e, s, 0) == [16, 17, 1, 2, 18, 19, 20, 21], f"{g} {nm} {page_ids(e, s, 0)}")
     U.check("xpages: page 1's P2 is named Mode in the upper left again", nm[2][1] == "Mode", str(nm[2]))
     # a trig held on page 2: the turn locks nothing (and is not sent to the host either: lock-set refused)
     ev = go + [(300, "press", "RECORD"), (400, "press", "T1"), (500, "press", "SRC:300M"), (600, "press", "DOWN"),
@@ -1061,12 +1066,12 @@ def t_cost(e):
     ev = [(20, "usb", msgs), (50, "press", "FX"), (150, "press", "SRC")]
     t = 250
     for k in range(6):
-        ev.append((t, "turn", (f"{k}:+20", 30, 4)))
+        ev.append((t, "turn", (f"{K1[k]}:+20", 30, 4)))
         t += 140
     ev += [(t, "press", "SMPL"), (t + 100, "press", "SMPL")]
     t += 200
     for k in range(6):
-        ev.append((t, "turn", (f"{k}:-20", 30, 4)))
+        ev.append((t, "turn", (f"{K1[k]}:-20", 30, 4)))
         t += 140
     ev += [(t, "usb", msgs), (t + 50, "press", "BD"), (t + 100, "press", "AMP"), (t + 200, "press", "AMP"),
            (t + 300, "turn", ("0:+20", 30, 4)), (t + 450, "turn", ("1:+20", 30, 4))]
@@ -1141,7 +1146,7 @@ def t_enum(e):
     for pat in PATS:   # FX 2 TYPE from OFF through the built-in list (ids 0..14 = positions until a 21 arrives:
         ty[pat], _ = turned(e, "enum-type", ev2[1:], LATE, 0, pat, lambda s: w16(e, s, FXW) >> 8,
                             extra=poke_type(e, 1, 0))   # no 21 here: the default list, position = id)
-        ln[pat], s = turned(e, "enum-len", ev1, LATE, 3, pat, lambda s: (w16(e, s, FXW + 76) & 0xfe) >> 1,
+        ln[pat], s = turned(e, "enum-len", ev1, LATE, K1[3], pat, lambda s: (w16(e, s, FXW + 76) & 0xfe) >> 1,
                             extra=poke_type(e, 0, 15))
     print(f"    steps  FILTER TYPE {typ}  TYPE {ty}  LEN(word) {ln}")
     U.check("enum: STUTTER LEN stores its zones' lo only (0 19 37 55 74 92 110)", all(v in LEN_LO for v in ln.values()),
@@ -1153,7 +1158,7 @@ def t_enum(e):
     U.check("enum: one slow turn after the wake = one step on each (FILTER TYPE, TYPE, LEN)",
             typ["one"] == 1 and ty["one"] == 1 and zone(ln["one"], LEN_LO) == 1, f"{typ['one']} {ty['one']} {ln['one']}")
     # the looks and ranges on STUTTER (FX 1), screen
-    s = e.run("enum-stutter", 600, ev1 + [(300, "turn", ("2:+8", 4, 10))], save=True, extra=poke_type(e, 0, 15))
+    s = e.run("enum-stutter", 600, ev1 + [(300, "turn", (f"{K1[2]}:+8", 4, 10))], save=True, extra=poke_type(e, 0, 15))
     look = e.peek(s, a + X_LOOK, 14)
     kn = e.peek(s, a + X_KN, 8)
     rmax = [e.u32(s, REC(14 + i) + 12) for i in range(14)]
@@ -1175,7 +1180,7 @@ def t_enum(e):
     # an older Sidecar: the same 24s without the step bit -> LEN continuous (a dial, range 0..0x7f00)
     old = {i: (lab, [z[:5] for z in zs]) for i, (lab, zs) in P.SENDFX_LABEL_SETS.items()}
     evo = [(20, "usb", all_msgs(sets=old))] + ev1[1:]
-    v, s = turned(e, "enum-old", evo, LATE, 3, "slow", lambda s: (w16(e, s, FXW + 76) & 0xfe) >> 1,
+    v, s = turned(e, "enum-old", evo, LATE, K1[3], "slow", lambda s: (w16(e, s, FXW + 76) & 0xfe) >> 1,
                   extra=poke_type(e, 0, 15))
     kn = e.peek(s, a + X_KN, 8)
     U.check("enum: an older Sidecar's 24 (no step bit): STUTTER's P2..P5 stay continuous (dials, 0..0x7f00), the "
@@ -1224,7 +1229,7 @@ def t_enumlock(e):
     """P-locks on a stepped knob store the step's value (LEN's zone lo in word 38's lo half); kept by power-off and a
     cold boot."""
     ev = [(20, "usb", all_msgs()), (50, "press", "FX"), (150, "press", "SRC"), (250, "press", "RECORD"),
-          (350, "press", "T1"), (450, "press", "T5"), (LATE - 100, "press", "T1:600M"), (LATE, "turn", ("3:+8", 12, 10)),
+          (350, "press", "T1"), (450, "press", "T5"), (LATE - 100, "press", "T1:600M"), (LATE, "turn", (f"{K1[3]}:+8", 12, 10)),
           (LATE + 700, "press", "RECORD")]
     c = U.card_copy(e, "enumlock")
     s = e.run("enumlock", LATE + 900, ev, save=True, card=c, extra=poke_type(e, 0, 15))
@@ -1368,18 +1373,18 @@ def bw_sent(e):
 
 
 def t_bw(e):
-    """BASE / WIDTH (0.5.0, sfx-basewidth): SEND FX 1 / 2's knobs G and H are BASE and WID, the host's send FX return
+    """BASE / WIDTH (0.5.0, sfx-basewidth): SEND FX 1 / 2's knobs C and D (sendfx-draw; G and H before) are BASE and WID, the host's send FX return
     filter. They show what the host's 22 ver 2 says; a turn goes to the host as a 22 ver 2 (FX, BASE, WIDTH), never into
     the kit (the FX words stay as they were); with a trig held they do nothing (no lock, nothing sent).
     Screen bw-fx1.png."""
     s0 = e.snap
     fx0 = {i: w16(e, s0, FXW + 2 * i) for i in (0, 29, 38, 39, 40, 41)}
     ev = [(20, "usb", P.sendfx_bw(0, 40, 90) + P.sendfx_bw(1, 10, 127)), (50, "press", "FX"), (150, "press", "SRC"),
-          (300, "turn", ("6:+20", 3, 20))]
+          (300, "turn", (f"{K1[6]}:+20", 3, 20))]
     s = e.run("bw-fx1", 500, ev, save=True)
     m = bw_sent(e)
     print(f"    sent {m}")
-    U.check("bw: SEND FX 1 knob G (BASE) turned up from the host's 40: 22 ver 2 FX 1, BASE above 40, WIDTH the host's 90",
+    U.check("bw: SEND FX 1 knob C (BASE) turned up from the host's 40: 22 ver 2 FX 1, BASE above 40, WIDTH the host's 90",
             bool(m) and all(x and x["fx"] == 0 and x["width"] == 90 for x in m) and m[-1]["base"] > 40, str(m))
     names = [e.cstr(s, e.u32(s, REC(r) + 48), 5) for r in (1, 2, 3, 4)]
     U.check("bw: records 1..4 are named BASE WID BASE WID", names == ["BASE", "WID", "BASE", "WID"], str(names))
@@ -1387,18 +1392,18 @@ def t_bw(e):
     U.check("bw: no FX word of the kit changed (BASE / WIDTH live on the host)", fx == fx0,
             " ".join(f"{i}:{fx0[i]:04x}->{fx[i]:04x}" for i in fx0))
     ev = [(20, "usb", P.sendfx_bw(0, 40, 90) + P.sendfx_bw(1, 10, 127)), (50, "press", "FX"), (150, "press", "SMPL"),
-          (250, "press", "SMPL"), (400, "turn", ("7:-20", 3, 20))]
+          (250, "press", "SMPL"), (400, "turn", (f"{K1[7]}:-20", 3, 20))]
     e.run("bw-fx2", 600, ev)
     m = bw_sent(e)
     print(f"    sent {m}")
-    U.check("bw: SEND FX 2 knob H (WID) turned down from the host's 127: 22 ver 2 FX 2, BASE the host's 10, WIDTH below",
+    U.check("bw: SEND FX 2 knob D (WID) turned down from the host's 127: 22 ver 2 FX 2, BASE the host's 10, WIDTH below",
             bool(m) and all(x and x["fx"] == 1 and x["base"] == 10 for x in m) and m[-1]["width"] < 127, str(m))
     ev = [(20, "usb", P.sendfx_bw(0, 40, 90)), (50, "press", "FX"), (150, "press", "SRC"), (250, "press", "RECORD"),
-          (350, "press", "T1"), (450, "press", "T1:500M"), (550, "turn", ("6:+20", 3, 20)), (700, "turn", ("7:+20", 3, 20)),
+          (350, "press", "T1"), (450, "press", "T1:500M"), (550, "turn", (f"{K1[6]}:+20", 3, 20)), (700, "turn", (f"{K1[7]}:+20", 3, 20)),
           (1050, "press", "RECORD")]
     s = e.run("bw-lock", 1250, ev, save=True)
     m = bw_sent(e)
-    U.check("bw: with a trig held, G and H lock nothing and send nothing", not m and lock(e, s, 12, 0, 29) == 0xffff,
+    U.check("bw: with a trig held, C and D (BASE, WID) lock nothing and send nothing", not m and lock(e, s, 12, 0, 29) == 0xffff,
             f"sent {m} lock 29 {lock(e, s, 12, 0, 29):04x}")
 
 
@@ -1413,11 +1418,11 @@ def bw_x(e, s):
 
 
 def t_bw2(e):
-    """BASE / WIDTH, the review's cases (2026-11-12): what knob G shows follows a host value that arrives while the page
+    """BASE / WIDTH, the review's cases (2026-11-12): what knob C (BASE) shows follows a host value that arrives while the page
     is open (the redraw), as a fresh draw of that value; a ver-1 22 and a 22 ver 2 for FX 3 change nothing; a turn wins
     over a host value that crosses it (pending, or within ~200 ms of its send: the host's 2 s refresh brings the rest);
     a later host value is taken; the WID records' default is 127 (0x7f00), the filter off."""
-    gband = lambda path: glyphs(png_lit(path), 100, 148, 256, 320)   # noqa: E731  knob G's dial, not its label
+    gband = lambda path: glyphs(png_lit(path), 35, 83, 256, 320)   # noqa: E731  knob C's dial (BASE), not its label
     ev_open = [(50, "press", "FX"), (150, "press", "SRC")]
     s = e.run("bw2-late", 700, ev_open + [(400, "usb", P.sendfx_bw(0, 100, 90))], save=True)
     late = gband(os.path.join(e.out, "bw2-late.png"))
@@ -1428,7 +1433,7 @@ def t_bw2(e):
     early = gband(os.path.join(e.out, "bw2-early.png"))
     e.run("bw2-none", 700, ev_open, save=True)
     none = gband(os.path.join(e.out, "bw2-none.png"))
-    U.check("bw2: a host value while SEND FX 1 is open redraws knob G as a fresh draw of it (and not as before)",
+    U.check("bw2: a host value while SEND FX 1 is open redraws knob C (BASE) as a fresh draw of it (and not as before)",
             late is not None and late == early and late != none, f"late==early {late == early} late!=none {late != none}")
     old = P.sendfx_bw(0, 40, 90) + P.sendfx_bw(1, 10, 127)
     bad = bytes([0xF0, 0x7D, 0x52, 0x54, 0x22, 0x02, 0x02, 5, 5, 0xF7])   # FX 3
@@ -1437,7 +1442,7 @@ def t_bw2(e):
     (f1, f2), got = bw_x(e, s)
     U.check("bw2: a 22 ver 2 for FX 3 and a ver-1 22 leave BASE / WIDTH as they were", (f1, f2) == ((40, 90), (10, 127)),
             f"{f1} {f2}")
-    ev = [(20, "usb", old)] + ev_open + [(300, "turn", ("6:+20", 3, 20)), (395, "usb", P.sendfx_bw(0, 5, 5))]
+    ev = [(20, "usb", old)] + ev_open + [(300, "turn", (f"{K1[6]}:+20", 3, 20)), (395, "usb", P.sendfx_bw(0, 5, 5))]
     # (the turn's sends land between 330 and 380 ms; the host's value just after. BW_HOLD is 500 ms of DTCN0 at the
     # hardware's 132 MHz, 100 ms here: rytm-emu's DTCN0 runs at 660 MHz against its event clock [measured])
     s = e.run("bw2-cross", 700, ev, save=True)
@@ -1458,7 +1463,7 @@ def t_bwwrap(e):
     clears an expired hold: a host value one wrap after the turn's send (6.51 s + 30..80 ms: inside the stale window for
     any send between 330 and 380 ms) is taken."""
     old = P.sendfx_bw(0, 40, 90) + P.sendfx_bw(1, 10, 127)
-    ev = [(20, "usb", old), (50, "press", "FX"), (150, "press", "SRC"), (300, "turn", ("6:+20", 3, 20)),
+    ev = [(20, "usb", old), (50, "press", "FX"), (150, "press", "SRC"), (300, "turn", (f"{K1[6]}:+20", 3, 20)),
           (6910, "usb", P.sendfx_bw(0, 9, 9))]
     s = e.run("bwwrap", 7100, ev, save=True)
     (f1, _), _ = bw_x(e, s)

@@ -2954,10 +2954,11 @@ with P5..P16); every knob and key stays the Rytm's (0029's).
   - The host's `3A 0 0` (it sends one at once when the new view is not drawn while the one before was) ends any hold at
     once, um-draw b's too (before this a 3A during that hold left the old frame up for the rest of the 300 ms).
 - **State**: `sv.hold`'s bit 7 (no new field); `sv_fxb` (4 B .bss, the box's address).
-- **Cost** (full set `sfd1`, OS 1.74): elekloader RAM 1608 B spare (sfpm3 2388 B): 0026 code +448 B, .bss +4 B; 0029
-  code + its box +326 B. The tick's extra work on the FX track: 0029's view walk (<= 16 views, one vtable call).
+- **Cost** (OS 1.74): 0026 code +448 B, .bss +4 B; 0029 code + its box +326 B (with page 1's encoder order, 0029 design.md
+  section 16). Full set `sfd1` (on sfpm3's tree) 1608 B elekloader RAM spare (sfpm3 2388 B); `sfd3` (on lock-halves'
+  `lh1`, 1452 B) 672 B spare. The tick's extra work on the FX track: 0029's view walk (<= 16 views, one vtable call).
 
-Tests [measured, rytm-emu 1.74, DTEMU_STRICT=1] `sfu_emu.py sfd1 fxview fxhold` (the host a fixed schedule, as umdraw):
+Tests [measured, rytm-emu 1.74, DTEMU_STRICT=1] `sfu_emu.py sfd1 fxview fxhold` (and `sfd3`) (the host a fixed schedule, as umdraw):
 
 - `fxview`: SEND FX 1 page 1 `0C 01`; SRC held + DOWN `0C 00, 1C 01`, DOWN `1C 00, 2C 01`, UP `2C 00, 1C 01`; SRC tapped
   (DELAY) `1C 00`; SEND FX 2 `0D 01` and its pages `1D`, `2D`; SRC (DELAY) `2D 00`; no 2A; a track change (FX key: the

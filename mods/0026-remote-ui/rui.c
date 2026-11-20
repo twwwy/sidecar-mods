@@ -982,7 +982,7 @@ static uint32_t sv_fxb;                /* 0029's box, 1 asked and none */
 static const struct sv_fxv *sv_fx(void) {
   if (!sv_fxb && SFX_MB[0] == 0x53465855u) {
     uint32_t b = (uint32_t)((int32_t (*)(const uint8_t *, int32_t))SFX_MB[1])(0, 0);
-    sv_fxb = b >> 28 == 4 && !(b & 3) && *(const uint32_t *)b == 0x53465856u ? b : 1;   /* 'SFXV' */
+    sv_fxb = b >> 28 == 4 && !(b & 1) && *(const uint32_t *)b == 0x53465856u ? b : 1;   /* 'SFXV' (m68k: 2-aligned) */
   }
   return sv_fxb > 1 ? (const struct sv_fxv *)sv_fxb : 0;
 }
