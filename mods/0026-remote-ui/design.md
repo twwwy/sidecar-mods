@@ -2917,3 +2917,58 @@ before stock.
 
 Test: `sfu_emu.py <tag> umhold` (SMPL pressed with no SMPL frame yet: the SRC frame still up 150 ms later; then the
 SMPL frame; with no SMPL frame at all, stock after the hold). sfpm2 fails the first check, sfpm3 passes.
+
+## sendfx-draw: an effect's SEND FX pages drawn by the Sidecar, the Rytm side (2026-11-20, emulator only)
+
+The Rytm half of the Sidecar's docs/um-pages.md "An effect's pages (sendfx-draw)" (sidecar-firmware `feat/sendfx-draw`,
+7b71bd1). A user effect may draw SEND FX 1 / 2's pages (0029's: page 1 TYPE ROUTE .. and pages 2/3, 3/3 of an effect
+with P5..P16); every knob and key stays the Rytm's (0029's).
+
+- **The view** [code]: the FX track's SEND FX page is a view of `sv_tick` like a track's, track byte `12 | 13` (SEND
+  FX 1 / 2) `| (page - 1) << 4`: `F0 7D 52 54 29 01 <0C 1C 2C | 0D 1D 2D> <on> F7`. On / off, the hello's on again, one
+  view at a time and the old view's off before a page change exactly as for a track's views; the off goes first also
+  between a track's view and a SEND FX view (an older host drops a 29 over track 11, so it ends the track's view instead
+  of drawing it over SEND FX). No 2A for it (its values are 0029's), no encoder pushes (31) from it, no 2B every second
+  (on a change only), no held-step lock; `sv.mach` 0, so the bank list / FUNC + YES / UP + SRC paths never see it.
+- **Which SEND FX page shows**: from 0029, not from 0026's own walk (0026 does not know 0029's records or its page).
+  0029's box `sfu_fxv` (magic `SFXV`; `view(ctrl)`, `draws[2]`) is found through 0029's existing mailbox (0x401b9e54
+  `SFXU`, `sfu_sysex`): `sfu_sysex(0, 0)` answers the box's address (an older 0029 answers 1: no SEND FX view, all as
+  before). `view(ctrl)` answers 0 or `12 + fx | (page - 1) << 4 | 0x40 covered` (0029 design.md section 16). 0029's tick
+  (ev_tick order 60) and its key handler run before 0026's tick (70), so the page is this tick's.
+- **DRAWS**: 22 ver 4 `<fx> <on>` reaches 0029 through 0022's router (as 22 ver 2 / 3); 0029 keeps it per slot in the
+  box (0 at boot, 0 again while the USB port is down: a new host says it again on its hello).
+- **The frame** shows on a SEND FX page exactly as on the SRC view: from the first 39 after the view's on, while host
+  messages come (1 s timeout), `3A x 0` gives the page back, a cover (something after SamplerLedView, as 0029's
+  `top_page` decides) hides it.
+- **No flash (the hold, generalised from um-draw b)**: a change to a SEND FX page whose slot has DRAWS 1 (a page change,
+  a slot change, a track change onto it), with the host alive (`sv.idle` < 1 s) and no remote page / splash up, keeps
+  what the glass shows until the new view's first commit, `HOLD_TICKS` (300 ms) at most:
+  - the host's frame was up (`sv.show`): it stays (um-draw b's hold, `sv.show` held by `sv.hold`);
+  - a stock screen was up (DELAY, AMP, a built-in track's page, 0029's own SEND FX page): `HOLD_FREEZE` (bit 7 of
+    `sv.hold`) - 0026's tick clears the UI controller's dirty flag (ctrl + 0x20, core-ar2's `ev_tick` is the dirty test
+    before the render) at its end, so stock does not render and the panel keeps its last picture; when the freeze ends
+    (the commit, the timeout, `3A 0 0`) the flag is set again and stock renders the new page. No frame buffer copy, no
+    RAM. [measured: rytm-emu 1.74, the panel 150 ms after DELAY -> SEND FX 1 is DELAY's, byte for byte, with DRAWS 1;
+    SEND FX 1's with DRAWS 0]
+  - DRAWS 0: as before - the Rytm's page at once.
+  - The host's `3A 0 0` (it sends one at once when the new view is not drawn while the one before was) ends any hold at
+    once, um-draw b's too (before this a 3A during that hold left the old frame up for the rest of the 300 ms).
+- **State**: `sv.hold`'s bit 7 (no new field); `sv_fxb` (4 B .bss, the box's address).
+- **Cost** (full set `sfd1`, OS 1.74): elekloader RAM 1608 B spare (sfpm3 2388 B): 0026 code +448 B, .bss +4 B; 0029
+  code + its box +326 B. The tick's extra work on the FX track: 0029's view walk (<= 16 views, one vtable call).
+
+Tests [measured, rytm-emu 1.74, DTEMU_STRICT=1] `sfu_emu.py sfd1 fxview fxhold` (the host a fixed schedule, as umdraw):
+
+- `fxview`: SEND FX 1 page 1 `0C 01`; SRC held + DOWN `0C 00, 1C 01`, DOWN `1C 00, 2C 01`, UP `2C 00, 1C 01`; SRC tapped
+  (DELAY) `1C 00`; SEND FX 2 `0D 01` and its pages `1D`, `2D`; SRC (DELAY) `2D 00`; no 2A; a track change (FX key: the
+  track before, FX again: SEND FX 1 again) `0C 00`, `0C 01`; 22 ver 4 per slot (`0 1` -> [1, 0], fx 2 / on 2 / a 10-byte
+  one dropped, `1 1, 0 0` -> [0, 1]); re-plugged (`--usb-host-gone`): the view's on after the new hello, DRAWS [0, 0].
+- `fxhold`: the host's frame is SEND FX 1's screen byte for byte; DRAWS 1, page 1 -> 2 with no page 2 frame yet: page 1's
+  frame 30 M (150 ms) later, then page 2's frame, or the Rytm's page 2 after the hold; DRAWS 0: the Rytm's page 2 at once;
+  `3A 00 00` in the hold: the Rytm's page 2 at once; DRAWS 1, DELAY -> SEND FX 1: DELAY's screen until the frame (SEND FX
+  1's own with DRAWS 0), the frame, or SEND FX 1's own page after the hold, `3A 00 00`: at once; a track change onto SEND
+  FX 1 (FX key): the track before's page stays.
+
+**Needs hardware**: that the hardware's render is gated by ctrl + 0x20 alone as in rytm-emu (the freeze) [inferred from
+core-ar2's README and the emulator]; that the stock page key's release (where it cycles) and the FX key are processed
+before the tick in the same UI pass, so no new-page render slips in before the hold starts [measured in rytm-emu only].

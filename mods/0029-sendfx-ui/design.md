@@ -744,3 +744,26 @@ verify.py PASS; the unchanged `sfpm3` (byte-identical to this branch's baseline 
 - `us all`: 366 / 1 (`dspmod` wants diag = 0), as sfpm3. `sfx all`: 110 / 1, `fx38`'s stock incremental-save check (no
   incremental save ran, 0); it fails the same on the unchanged sfpm3 [measured], so it is not this change.
 - The repo checks: hash_expect --check, test_build_excludes, test_layout, test_cavescan, test_ostarget, layout.py: pass.
+## 16. sendfx-draw (2026-11-20): an effect's SEND FX pages drawn by the Sidecar
+
+The Sidecar's docs/um-pages.md "An effect's pages": a user effect may draw SEND FX 1 / 2's pages; 0026 reports the view
+(29 track 12 / 13 with the page) and shows the host's frame (0026 design.md "sendfx-draw"). 0029's part is small and
+separate from its knob, lock and storage code:
+
+- **`sfu_fxv`** (`SFXV`, 12 B, initialised data): `view(ctrl)` and `draws[2]`. 0026 gets its address from
+  `sfu_sysex(0, 0)` (the mailbox's existing function; a NULL message is otherwise impossible, and an older 0029 answers 1
+  for it: len 0 is dropped), so no new fixed address or symbol is shared.
+- **`view(ctrl)`** (UI task): walks the view list (ctrl + 28) as `top_page` does; a view before SamplerLedView whose
+  vtable +0x9c is the page views' knob -> record routine (`PV_KNOBREC` 0x4003795a: FxPageView's and SamplePageView's
+  [measured, rytm-emu 1.74; 1.73's address by the map's first segment, shift 0: inferred]) and whose knob A is TYPE's record
+  (`ID0 + 2` / `ID0 + 8`) is SEND FX 1 / 2. Answers `12 + fx | pg[fx] << 4 | 0x40` when a view after SamplerLedView is not
+  a pad mode's (covered), else 0. Not `fxview` (the view the knobs were last read through): DELAY / SEND FX 1 and REVERB /
+  SEND FX 2 are two FxPageView objects, and `fxview` is the other one's until the new page's first draw, so the tick
+  before that draw would miss the page (and 0026's hold would start a frame late).
+- **22 ver 4 SENDFX DRAWS** `F0 7D 52 54 22 04 <fx> <on> F7` (9 bytes, fx and on 0 / 1, else dropped), from 0022's router
+  as ver 2 / 3: `draws[fx] = on`. The tick sets both to 0 while the USB port is down (`PORT_STATE` != 1), so a host that
+  never draws is not held for.
+- The encoder order of page 1 (the spec's C / D = BASE / WIDTH, E..H = P1..P4) is **not changed here**
+  yet: it waits for `feat/sendfx-lock-halves`, which changes the same knob code (TODO).
+
+Tests: `sfu_emu.py sfd1 fxview fxhold` (0026's set; 0026 design.md "sendfx-draw").

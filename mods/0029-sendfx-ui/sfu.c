@@ -801,13 +801,20 @@ static void take_names(const uint8_t *d, int32_t len) {
 
 /* 21 NAMES / 22 STATE from the host (0022's router, through the mailbox) */
 static int32_t sysex_body(const uint8_t *d, int32_t len);
+struct sfu_fxv;
+extern struct sfu_fxv sfu_fxv;
 int32_t sfu_sysex(const uint8_t *d, int32_t len) {
   uint32_t t0 = TIMER;
-  int32_t r = sysex_body(d, len);
+  int32_t r;
+  if (!d) return (int32_t)&sfu_fxv;   /* sendfx-draw: 0026 asks for the box (an older 0029 answers 1: len 0 is dropped) */
+  r = sysex_body(d, len);
   timed(t0, 1);
   return r;
 }
+static void fxv_draws(int32_t fx, int32_t on);
 static int32_t sysex_body(const uint8_t *d, int32_t len) {
+  /* sendfx-draw: 22 ver 4 SENDFX DRAWS <fx> <on>: FX fx's effect draws its SEND FX pages (0026 holds the screen for it) */
+  if (len == 9 && d[4] == 0x22 && d[5] == 4 && d[6] < 2 && d[7] < 2) { fxv_draws(d[6], d[7]); return 1; }
   /* sendfx-pages: 22 ver 3 <fx> <first p 5..16> <n 1..12> <values>: the host's P5..P16 of FX d[6] (a turn not sent yet, or
      sent within BW_HOLD, wins: as BASE / WIDTH) */
   if (len >= 11 && d[4] == 0x22 && d[5] == 3 && d[6] < 2 && d[7] >= 5 && d[8] >= 1 && d[7] + d[8] <= 17 && len >= 10 + d[8]) {
@@ -1168,6 +1175,46 @@ static int32_t mach_top(void *ctrl) {
     if ((j = KNOB_REC(PG.mview, PG.mvt, k)) != 0) return PG.umb->which(j);
   return 0;
 }
+/* sendfx-draw (the Sidecar's docs/um-pages.md "An effect's pages"): what 0026 needs to report and hold a SEND FX page,
+   in a box of its own (sfu_sysex(0, 0) gives its address; nothing else of 0029's layout is read from outside).
+   view(ctrl), on the UI task: 0 when no SEND FX page is in the view list, else 12 + fx | (page - 1) << 4 (0029's
+   page of that FX: 1, 2/3, 3/3) | 0x40 when something covers it (as top_page: a view after SamplerLedView that is not
+   a pad mode's, or no SamplerLedView). The page view is found by its knob A's record (TYPE's, ID0 + 2 / ID0 + 8) on
+   any view whose vtable +0x9c is the page views' knob -> record routine (PV_KNOBREC: FxPageView's and SamplePageView's
+   [measured, rytm-emu 1.74: both 0x4003795a]; SynthPageView has its own), not by the view the knobs were last read
+   through (fxview): the tick before a new page's first draw sees it too. draws[fx]: the host's 22 ver 4 (MIDI task),
+   0 until it says 1, again 0 while the USB port is down (a new host says it again on its hello). */
+#define PV_KNOBREC 0x4003795au
+#define FXV_MAGIC 0x53465856u   /* 'SFXV' */
+
+static int32_t fxv_view(void *ctrl);
+struct sfu_fxv {
+  uint32_t magic;
+  int32_t (*view)(void *ctrl);
+  volatile uint8_t draws[2];
+  uint8_t pad[2];
+} sfu_fxv = {FXV_MAGIC, fxv_view, {0, 0}, {0, 0}};
+static void fxv_draws(int32_t fx, int32_t on) { sfu_fxv.draws[fx] = (uint8_t)on; }
+static int32_t fxv_view(void *ctrl) {
+  const uint8_t *c = (const uint8_t *)ctrl;
+  const uint32_t *n = *(const uint32_t *const *)(c + 28);
+  int32_t k, j, led = 0, cov = 0, fx = -1;
+  for (k = 0; k < 16 && n && (const uint8_t *)n != c + 20; ++k) {
+    const uint32_t *v = (const uint32_t *)n[2];
+    if (!v) return 0;
+    if (led) {
+      for (j = 0; j < 4 && padviews[j] != v[0]; ++j) {}
+      if (j == 4) cov = 1;
+    } else if (v[0] == VT_SAMPLELED) led = 1;
+    else if (fx < 0 && ((const uint32_t *)v[0])[0x9c / 4] == PV_KNOBREC) {
+      j = KNOB_REC((void *)v, v[0], 0);
+      fx = j == ID0 + 2 ? 0 : j == ID0 + 8 ? 1 : -1;
+    }
+    n = (const uint32_t *)n[0];
+  }
+  if (fx < 0) return 0;
+  return (12 + fx) | PG.pg[fx] << 4 | (cov || !led) << 6;
+}
 /* the page's title again (sfu_title's push, as page_view_activate does: page_info(selected).name, now PG.ttl) */
 static void retitle(void *view, const char *t) {   /* (um-pages: t, else the view's own title) */
   uint32_t s = 0;
@@ -1337,6 +1384,7 @@ static void tick_body(void *ctrl) {
      host (22 ver 3, all of the FX's P5..), when USB lets */
   PG.ctrl = ctrl;
   PG.ontop = (uint8_t)top_page(ctrl);
+  if (PORT_STATE != 1) sfu_fxv.draws[0] = sfu_fxv.draws[1] = 0;   /* sendfx-draw: the next host says its DRAWS again */
   /* um-pages: 0021's box (once), which U slot page is the screen; back on a SRC page 2 (another page left for it), its
      title again over the machine's name stock put up */
   if (!PG.umq && XBOX[0] == 0x58535450u) {

@@ -926,6 +926,128 @@ def t_umhold(e):
     _, _, _, scr = ud_run(e, "uh-none", t + 900, go + old + [(t + 300, "press", "SMPL")] + ud_alive(t + 300, t + 900))
     U.check("umhold: no SMPL frame comes: the stock SMPL page after the hold", scr != ud_frame(1) and scr is not None, "")
 
+# ---- sendfx-draw (2026-11-20): an effect's SEND FX pages drawn by the Sidecar (its docs/um-pages.md "An effect's pages").
+# 0026 sends the view (29 <12 | 13 + (page - 1) << 4> <on>) for 0029's SEND FX pages and holds the screen over a change to
+# a page whose slot DRAWS (22 ver 4) until the host's first frame. The host is a fixed schedule (no answers), as umdraw's.
+def fd_go(e, both=True):
+    """Events to SEND FX 1 page 1 with FX16 (three pages) on FX 1 (and FX 2), the --poke args; the clock after them."""
+    names = b"".join(P.sendfx_names([(0, "OFF"), (1, "CHORUS"), (FX16, "FX16")]))
+    ex = poke_type(e, 0, FX16) + (poke_type(e, 1, FX16) if both else [])
+    return [(20, "usb", names + fx16_msgs()), (50, "press", "FX"), (150, "press", "SRC")], ex, 300
+
+
+def fd_v29(e):
+    """The 29s sent, a repeat of the one before dropped (the base is inside the hello's 1 s / 2 s repeats: each sends the
+    view's on again, as since rui1027)."""
+    v = [(m[6], m[7]) for m in e.sent if len(m) == 9 and m[4] == 0x29 and m[5] == 1]
+    return [x for i, x in enumerate(v) if not i or x != v[i - 1]]
+
+
+def fd_run(e, name, length, ev, ex):
+    s = e.run(name, length, ev, save=True, extra=ex, env={"DTBOOT_OLED": "1"})
+    return s, fd_v29(e), ud_oled(e.log)
+
+
+def fd_box(e, s):
+    """0029's sfu_fxv: magic, view, draws[2]."""
+    a = sym(e, "sfu_fxv")
+    return e.u32(s, a), list(e.peek(s, a + 8, 2))
+
+
+def t_fxview(e):
+    """sendfx-draw: the SEND FX view's 29 for each slot and page - on at a SEND FX page, off when it leaves, a page change
+    (SRC / SMPL held + DOWN / UP) the old page's off then the new on, a slot change, again after a hello (a re-plug); no
+    2A for it; 22 ver 4 SENDFX DRAWS kept per slot in 0029's box (malformed ones dropped), 0 again while the port is down."""
+    go, ex, t = fd_go(e)
+    ev = go + [(t, "press", "SRC:300M"), (t + 100, "press", "DOWN"), (t + 200, "press", "DOWN"),
+               (t + 400, "press", "SRC:200M"), (t + 500, "press", "UP"), (t + 700, "press", "SRC"),
+               (t + 850, "press", "SMPL"), (t + 1000, "press", "SMPL"), (t + 1150, "press", "SMPL:300M"),
+               (t + 1250, "press", "DOWN"), (t + 1350, "press", "DOWN"), (t + 1550, "press", "SRC")]
+    s, v29, scr = fd_run(e, "fv-pages", t + 1700, ev, ex)
+    v2a = [m for m in e.sent if len(m) >= 10 and m[4] == 0x2A and m[5] == 1 and m[6] & 0x3f > 11]
+    print(f"    29 {[f'{a:02x} {b}' for a, b in v29]}")
+    U.check("fxview: SEND FX 1 page 1 = 29 0C 01; DOWN: 0C 00, 1C 01 (2/3); DOWN: 1C 00, 2C 01 (3/3); UP: 2C 00, 1C 01; "
+            "SRC tapped (DELAY): 1C 00; SEND FX 2 = 0D 01; its page 2 / 3: 0D 00, 1D 01, 1D 00, 2D 01; SRC (DELAY): 2D 00",
+            v29 == [(0x0c, 1), (0x0c, 0), (0x1c, 1), (0x1c, 0), (0x2c, 1), (0x2c, 0), (0x1c, 1), (0x1c, 0), (0x0d, 1),
+                    (0x0d, 0), (0x1d, 1), (0x1d, 0), (0x2d, 1), (0x2d, 0)], f"29 {v29}")
+    U.check("fxview: no 2A for a SEND FX view", not v2a, f"{len(v2a)} 2A")
+    # a track change: FX (back to the track before: no view there) and FX again (SEND FX 1 shows again), SRC (DELAY)
+    ev = go + [(t, "press", "FX"), (t + 400, "press", "FX"), (t + 550, "press", "SRC")]
+    s, v29, _ = fd_run(e, "fv-track", t + 700, ev, ex)
+    U.check("fxview: FX (the track before): 29 0C 00; FX again (SEND FX 1): 29 0C 01; SRC (DELAY): 29 0C 00",
+            v29 == [(0x0c, 1), (0x0c, 0), (0x0c, 1), (0x0c, 0)], f"29 {v29}")
+    # 22 ver 4: per slot; malformed dropped
+    bad = [bytes([0xf0, 0x7d, 0x52, 0x54, 0x22, 0x04, 2, 1, 0xf7]), bytes([0xf0, 0x7d, 0x52, 0x54, 0x22, 0x04, 1, 2, 0xf7]),
+           bytes([0xf0, 0x7d, 0x52, 0x54, 0x22, 0x04, 1, 1, 0, 0xf7])]
+    seq = [(t, "usb", P.sendfx_draws(0, 1)), (t + 20, "usb", b"".join(bad))]
+    s, _, _ = fd_run(e, "fv-draws1", t + 60, go + seq, ex)
+    m1, d1 = fd_box(e, s)
+    s, _, _ = fd_run(e, "fv-draws2", t + 100, go + seq + [(t + 60, "usb", P.sendfx_draws(1, 1) + P.sendfx_draws(0, 0))], ex)
+    _, d2 = fd_box(e, s)
+    U.check("fxview: 22 ver 4 kept per slot: 0 1 -> [1, 0] (fx 2, on 2, a 10-byte one dropped); 1 1, 0 0 -> [0, 1]; the "
+            "box's magic SFXV", m1 == 0x53465856 and d1 == [1, 0] and d2 == [0, 1], f"{m1:08x} {d1} {d2}")
+    # the hello: the host gone and back on SEND FX 1 (DRAWS 1 before): the view's on again, DRAWS back to 0
+    g0, g1 = e.clock + t + 100, e.clock + t + 260
+    s, _, _ = fd_run(e, "fv-hello", t + 700, go + seq, ex + ["--usb-host-gone", f"{g0}M:{g1}M"])
+    _, d3 = fd_box(e, s)
+    hl = [i for i, m in enumerate(e.sent) if len(m) > 5 and m[4] == 0x35]
+    after = [(m[6], m[7]) for m in e.sent[hl[-1]:] if len(m) == 9 and m[4] == 0x29 and m[5] == 1] if hl else []
+    U.check("fxview: re-plugged on SEND FX 1: 29 0C 01 again after the new hello (35); DRAWS 0 for both again",
+            len(hl) >= 1 and (0x0c, 1) in after and d3 == [0, 0], f"hellos {len(hl)}, 29 after the last {after}, draws {d3}")
+
+
+def t_fxhold(e):
+    """sendfx-draw: with DRAWS 1 for the slot, a change to its SEND FX page keeps what the screen shows until the host's
+    first frame for it (HOLD_TICKS at most): the host's frame of the page before, or a stock page (no render); with
+    DRAWS 0 the Rytm's own page at once. The host's frame shown on a SEND FX page. The host's 3A 00 00 ends a hold."""
+    go, ex, t = fd_go(e)
+    on = [(30, "usb", P.sendfx_draws(0, 1))]
+    # the host's frame on SEND FX 1 page 1
+    _, v29, scr = fd_run(e, "fh-frame", t + 300, go + on + ud_host(t, t + 300, 1), ex)
+    U.check("fxhold: the host's frame is SEND FX 1 page 1's screen, byte for byte", scr == ud_frame(1) and (0x0c, 1) in v29,
+            f"29 {v29}")
+    # page 1 -> 2 (SRC held + DOWN at t + 400): page 2's frame not here yet 30 M later
+    pg2 = [(t + 300, "press", "SRC:300M"), (t + 400, "press", "DOWN")]
+    base = go + ud_host(t, t + 390, 1) + pg2
+    _, v29, gap = fd_run(e, "fh-gap", t + 430, go + on + ud_host(t, t + 390, 1) + pg2 + ud_alive(t + 390, t + 430), ex)
+    U.check("fxhold: DRAWS 1, page 2 (29 1C 01) without its frame yet: page 1's frame still up", (0x1c, 1) in v29 and
+            gap == ud_frame(1), f"29 {v29}")
+    _, _, scr = fd_run(e, "fh-new", t + 600, go + on + ud_host(t, t + 390, 1) + pg2 + ud_host(t + 420, t + 600, 2, seq0=40), ex)
+    U.check("fxhold: then page 2's frame", scr == ud_frame(2), "")
+    _, _, none = fd_run(e, "fh-none", t + 700, go + on + ud_host(t, t + 390, 1) + pg2 + ud_alive(t + 390, t + 700), ex)
+    U.check("fxhold: no page 2 frame comes: the Rytm's page 2 after the hold", none is not None and none != ud_frame(1), "")
+    _, _, d0 = fd_run(e, "fh-d0", t + 430, base + ud_alive(t + 390, t + 430), ex)
+    U.check("fxhold: DRAWS 0: the Rytm's page 2 at once (as after the hold)", d0 == none, "")
+    _, _, ka = fd_run(e, "fh-3a", t + 430, go + on + ud_host(t, t + 390, 1) + pg2 + [(t + 410, "usb", P.rui_open(0, 0))] +
+                      ud_alive(t + 420, t + 430), ex)
+    U.check("fxhold: the host's 3A 00 00 during the hold: the Rytm's page 2 at once", ka == none, "")
+    # a stock page (DELAY) -> SEND FX 1 with DRAWS 1: DELAY stays on the glass (no render) until the frame
+    dl = [(t, "press", "SRC")]                    # SEND FX 1 -> DELAY (the press held back, given to stock at its release)
+    _, _, ref_d = fd_run(e, "fh-delay", t + 290, go + on + dl, ex)
+    sf = dl + [(t + 300, "press", "SRC")]         # DELAY -> SEND FX 1
+    # (the page key cycles at its release, t + 330: 0029 design.md section 13)
+    _, v29, frz = fd_run(e, "fh-frz", t + 360, go + on + sf + ud_alive(t + 300, t + 360), ex)
+    _, _, ref_f = fd_run(e, "fh-frz0", t + 360, go + sf + ud_alive(t + 300, t + 360), ex)
+    U.check("fxhold: DRAWS 1, DELAY -> SEND FX 1 (29 0C 01) without its frame yet: DELAY's screen still up, not SEND FX 1's",
+            v29[-1:] == [(0x0c, 1)] and frz == ref_d and ref_f != ref_d and ref_d is not None, f"29 {v29}")
+    U.check("fxhold: DRAWS 0: SEND FX 1's own page at once", ref_f is not None and ref_f != ref_d, "")
+    _, _, scr = fd_run(e, "fh-frzf", t + 520, go + on + sf + ud_host(t + 370, t + 520, 3), ex)
+    U.check("fxhold: then the host's frame for SEND FX 1", scr == ud_frame(3), "")
+    _, _, aft = fd_run(e, "fh-frzn", t + 650, go + on + sf + ud_alive(t + 300, t + 650), ex)
+    _, _, aft0 = fd_run(e, "fh-frzn0", t + 650, go + sf + ud_alive(t + 300, t + 650), ex)
+    U.check("fxhold: no frame comes: SEND FX 1's own page after the hold (as with DRAWS 0)", aft == aft0 and aft != ref_d, "")
+    _, _, k3 = fd_run(e, "fh-frz3a", t + 360, go + on + sf + [(t + 340, "usb", P.rui_open(0, 0))] + ud_alive(t + 350, t + 360), ex)
+    U.check("fxhold: the host's 3A 00 00 during the freeze: SEND FX 1's own page at once", k3 == ref_f, "")
+    # a track change onto it: FX (the track before, BD), FX again (SEND FX 1, DRAWS 1): BD's page stays until the frame
+    tc = [(t, "press", "FX")]
+    _, _, ref_b = fd_run(e, "fh-bd", t + 390, go + on + tc, ex)
+    tc += [(t + 400, "press", "FX")]
+    _, v29, frz = fd_run(e, "fh-trk", t + 470, go + on + tc + ud_alive(t + 400, t + 470), ex)
+    _, _, ref_t = fd_run(e, "fh-trk0", t + 470, go + tc + ud_alive(t + 400, t + 470), ex)
+    U.check("fxhold: DRAWS 1, a track change onto SEND FX 1 (29 0C 01): the track before's page stays, not SEND FX 1's",
+            v29[-1:] == [(0x0c, 1)] and frz == ref_b and ref_t != ref_b and ref_b is not None, f"29 {v29}")
+
+
 X_TIME = 1124 + DL   # ui_sum ui_max ui_n mt_sum mt_max mt_n (DTCN0 counts)
 ST_TICKS = 1034   # m68k: 2-byte alignment (calls at 1030)
 
@@ -1368,7 +1490,7 @@ def t_fmname(e):
           glyphs(rows, 76, 100, 6, 100) is not None, "")
 
 
-TESTS = {"umpages": t_umpages, "umdraw": t_umdraw, "umhold": t_umhold, "fmname": t_fmname, "enum": t_enum, "typelist": t_typelist, "enumlock": t_enumlock, "enumkit": t_enumkit, "ext": t_ext,
+TESTS = {"umpages": t_umpages, "umdraw": t_umdraw, "umhold": t_umhold, "fxview": t_fxview, "fxhold": t_fxhold, "fmname": t_fmname, "enum": t_enum, "typelist": t_typelist, "enumlock": t_enumlock, "enumkit": t_enumkit, "ext": t_ext,
          "labels": t_labels, "fullnames": t_fullnames, "xpages": t_xpages, "cost": t_cost, "bw": t_bw, "bw2": t_bw2, "bwwrap": t_bwwrap, "pages": t_pages, "names": t_names, "locks": t_locks, "save": t_save, "stock": t_stock, "kits": t_kits, "halves": t_halves}
 
 
