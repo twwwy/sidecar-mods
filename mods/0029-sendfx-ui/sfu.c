@@ -520,8 +520,22 @@ int32_t sfu_f_read(void *set, int32_t id) {
   if (st.init) sync(set);
   return to_knob(id - ID0, half_of(id - ID0, r));
 }
+/* amp-halves: the Sound set's write (vtable +0x30, 0x400a9d7e) stores the word into the trig array of track set + 8
+   (0x400a9e58: jsr 0x4011f3fa(v, track, k), 0x8000e5b0 + 84 t + 2 k) [code]; a base turn of SFX1 / SFX2 keeps that row's
+   other half there (a step's one-half lock on it plays on), as fx_write_hi does for FX 38..41. The kit word gets both. */
+#define TRIG0 ((volatile uint16_t *)0x8000e5b0u)
 int32_t sfu_s_write(void *set, int32_t id, int32_t v, int32_t a, int32_t b) {
-  if (OURS(id)) { st.calls++; v = merge(id - ID0, S_READ(set, id), v); }
+  if (OURS(id)) {
+    uint32_t t = *(uint32_t *)((uint8_t *)set + 8);
+    st.calls++;
+    v = merge(id - ID0, S_READ(set, id), v);
+    if (t < 12) {
+      volatile uint16_t *w = TRIG0 + 42 * t;
+      int32_t keep = HALF(id - ID0) ? 0xff00 : 0x00ff, old = *w, r = S_WRITE(set, id, v, a, b);
+      if (*w == (uint16_t)v) *w = (uint16_t)((old & keep) | (v & ~keep));   /* (a trig since: its word stays) */
+      return r;
+    }
+  }
   else if (um_val(id) != -1) return PG.umb->put(id, xmode(id) ? x_half(id, v) : v);   /* um-pages: kept, sent */
   else if (xmode(id)) v = x_keep(id, x_half(id, v), S_READ(set, id));
   return S_WRITE(set, id, v, a, b);
@@ -654,14 +668,15 @@ int32_t sfu_s_lclr(void *set, int32_t id, int32_t step) { return lclr(set, id, s
 
 /* scene-guard (2026-11-20): the scene and performance lock facades' accepts(id) (their vtables' +0x24, ptr patches
    0x401df6e8 and 0x401ddd5c; stock 0x400b83d0 / 0x400acc3c, the same code: the record's kind <= 60). Refused for our
-   records - SFX1 / SFX2, SEND FX TYPE / ROUTE / P1..P4 (ids 14..27), BASE / WIDTH (1..4) and a page's P5..P16 - so a
+   records - SFX1 / SFX2, SEND FX TYPE / ROUTE / P1..P4 (ids 14..27), BASE / WIDTH (1..4), a page's P5..P16 and a user
+   machine's paged P17..P32 (SRC / SMPL page 2: the record's word is not the knob's) - so a
    scene or performance edit makes no new lock on them: the stock list keeps one record per word (two knobs in one
    record) and stores FX 38..41 as FX slot 0, which reloads as a lock on FX index 9 (delay TIME) [measured, 1.74]. The
    knob turn 0x400385f8, push-clear 0x40038500 and the displays ask this first; records already in a kit stay and play. */
 #define SCN_OK ((rd_fn)0x400b83d0u)
 int32_t sfu_scn_ok(void *f, int32_t id) {
   int32_t k;
-  if (OURS(id) || BW(id) || pq(id, &k) != -1) return 0;
+  if (OURS(id) || BW(id) || pq(id, &k) != -1 || um_val(id) != -1) return 0;   /* (um-pages: a U slot's P17..P32 too) */
   return SCN_OK(f, id);
 }
 

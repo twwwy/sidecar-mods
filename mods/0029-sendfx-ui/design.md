@@ -787,7 +787,7 @@ lock, show and clear their own half, as SEND FX P1..P4 do since section 15; the 
   A / B pushed clears that knob's half only.
 - The FX set's lock get / set lost their non-38..41 branches (dead since TYPE / ROUTE return first), which pays for most
   of the above: 0029 +24 B of code (16214 -> 16238), no state.
-- Base turns: unchanged (the stock write; 0025 design.md "amp-halves", "Not changed").
+- Base turns: see section 19 (the trig array row keeps a one-half lock's locked half).
 
 **Tests** [measured, rytm-emu 1.74, DTEMU_STRICT=1; `ah1` = sfd3's mods and params with this change, build.py / verify.py
 PASS; the unchanged `sfd3` (its MAIN OS byte-identical to this branch's baseline build) for comparison]:
@@ -823,8 +823,7 @@ Tags as above; rytm-emu 1.74, DTEMU_STRICT=1; nothing flashed.
   without it, so an existing record still lights its page. Existing records in a kit (old projects) are not touched: they
   load, play and save as before (the guard only refuses new ones; push-clear of such a record on a guarded knob is refused
   too: clear the scene instead) [inferred from the callers].
-- Not covered: um-pages' paged U knobs (P17..P32, `um_val`) still take scene locks on the record's container word (not
-  asked for; a few bytes more) [inferred]. The performance facade's guard is in [code] only: no emulator test drives
+- um-pages' paged U knobs (P17..P32, `um_val`): covered since section 19. The performance facade's guard is in [code] only: no emulator test drives
   PERFORMANCE mode.
 - Cost: 0029 +88 B of code (16238 -> 16326), no state.
 
@@ -840,3 +839,25 @@ cold boot that record is (12, 9): the delay TIME corruption. `amphalves` 12 / 0,
 545 / 0 (halves 10, fxview 5, fxhold 12 included), `us all` 371 / 0, `sfx all` 107 / 4 - fx38's incremental-save check,
 reload (2) and kitswitch (1), the same four on the unchanged sfd4 (107 / 4) [measured], so not this change. Full set
 elekloader RAM: sfd4 748 B spare, + amp-halves 584 B, + scene-guard (ag1) 496 B.
+
+## 19. amp-halves / scene-guard follow-ups (2026-11-21, user-approved)
+
+**Base turn of the partner half.** The Sound set's write (vtable +0x30, 0x400a9d7e; 1.74 0x400a9dea) ends in
+`0x4011f3fa(v, track, k)` (0x400a9e58; 1.74 0x4011f466 / 0x400a9ec4) with track = set + 8: it stores v at
+`0x8000e5b0 + 84 t + 2 k`, the trig array row, and clears the same entry of 0x80005f10 [code]. So turning SFX2's base while
+step 5 plays a SFX1-only lock replaced the locked SFX1 in the row with the kit's until the next trig [measured on ag1: row
+`1824` -> `0c30`]. `sfu_s_write` now reads the row's word 0 before the stock write (track = set + 8, < 12) and afterwards,
+if the row still holds the word it just wrote, puts the other half back: `(old & keep) | (v & ~keep)`, keep the unturned
+half (as `fx_write_hi` for FX 38..41). If a trig rewrote the row in between, its word stays (the check); a trig landing
+inside the stock write before its store is overwritten by stock as before, and then gets the pre-trig half back until the
+next trig [inferred: a window of one stock write]. The kit word and the project copy take the whole word as before.
+Cost: +84 B (`sfu_s_write` 306 -> 390; a separate helper or one shared S_WRITE call came out larger: 148 / 402 B).
+
+**Scene guard: user machines' paged knobs.** `sfu_scn_ok` also refuses a record `um_val` answers for (a U slot's
+P17..P32 while its SRC / SMPL page 2 shows): without it a P19 turn with a scene pad held made a scene record on the
+record's container word (BD index 11) [measured on ag1]. Cost +16 B.
+
+**Tests** [measured, rytm-emu 1.74, DTEMU_STRICT=1; `ag2` = ag1 + these]: `amphalves` 13 checks (new: after PLAY / STOP
+the row holds step 5's `1824`; SFX2's base turned: `1830`, SFX1's lock kept; then the next trigs play the new kit halves,
+the existing check), `scnguard` 4 checks (new: U1 on BD, SRC page 2, SD held + P19: no record; ATK after it: index 33).
+On ag1 exactly the two new checks fail. Suites: see the commit message. RAM: ag1 496 B spare, ag2 396 B.

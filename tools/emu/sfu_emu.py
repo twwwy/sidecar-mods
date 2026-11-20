@@ -442,18 +442,30 @@ def t_amphalves(e):
             f"CP {lock(e, s5, CP, 2, 0):04x} base {bc:04x} RS {lock(e, s5, RS, 1, 0):04x} base {br:04x} BD base {base(s5):04x}")
     lc, hr = lc or 0, hr or 0
     # playback: each locked step plays its locked half with the kit's other half
-    s6 = e.run("amph-play", 900, [(50, "press", "RECORD"), (100, "press", "PLAY"), (800, "press", "STOP")], snap=s5,
-               start=t, save=True, extra=["--every", "5M"], env={"DTBOOT_PEEK": "8000e5b0"})
+    s6 = e.run("amph-play", 900, [(50, "press", "RECORD"), (70, "press", "BD"), (100, "press", "PLAY"), (800, "press", "STOP")],
+               snap=s5, start=t, save=True, extra=["--every", "5M"], env={"DTBOOT_PEEK": "8000e5b0"})
     t += 900
     want1, want5 = (b2 & 0xff00) | l3 << 1, h5 << 8 | (b2 & 0xff)
     bd, cp, rs = amp_rx(e, "amph-play", BD), amp_rx(e, "amph-play", CP), amp_rx(e, "amph-play", RS)
     U.check(f"amphalves: PLAY - BD alternates step 1 {want1:04x} (kit SFX1, locked SFX2) and step 5 {want5:04x} (locked "
-            "SFX1, kit SFX2)", want1 in bd and want5 in bd and b2 not in bd[1:] and len(bd) >= 3,
+            "SFX1, kit SFX2)", want1 in bd and want5 in bd and len(bd) >= 3 and
+            b2 not in bd[min(bd.index(want1), bd.index(want5)):],
             " ".join("%04x" % v for v in bd[:8]))
     wc, wr = (bc & 0xff00) | lc << 1, hr << 8 | (br & 0xff)
     U.check(f"amphalves: PLAY - CP step 3 {wc:04x} (kit SFX1, locked SFX2) and step 1 the kit's {bc:04x}; RS step 2 "
             f"{wr:04x} (locked SFX1, kit SFX2) and step 4 the kit's {br:04x}", wc in cp and bc in cp and wr in rs and
             br in rs, "CP " + " ".join("%04x" % v for v in cp[:8]) + " RS " + " ".join("%04x" % v for v in rs[:8]))
+    # the partner half's base turned while the last trig's one-half lock still plays (stopped: BD's trig array row holds
+    # step 1's or step 5's word): the row keeps the locked half, the turned half is the kit's new one
+    r6 = w16(e, s6, TRIG)
+    knob = "1:+20" if r6 == want5 else "0:-20"   # step 5 (SFX1 locked): SFX2's base; step 1 (SFX2 locked): SFX1's
+    s6 = e.run("amph-partner", 300, [(50, "turn", (knob, 2, 20))], snap=s6, start=t, save=True)
+    t += 300
+    b6, r6b = base(s6), w16(e, s6, TRIG)
+    want6 = h5 << 8 | (b6 & 0xff) if r6 == want5 else (b6 & 0xff00) | l3 << 1
+    U.check(f"amphalves: the partner's base turned while step {5 if r6 == want5 else 1}'s one-half lock plays ({r6:04x}) - BD's "
+            f"trig array row {want6:04x}: the locked half kept, the turned half the new kit's ({b2:04x} -> {b6:04x})",
+            r6 in (want1, want5) and b6 != b2 and r6b == want6, f"row {r6:04x} -> {r6b:04x}")
     # BD's bases turned again (stopped) and PLAY: each step follows the kit in its unlocked half
     s7 = e.run("amph-base2", 400, [(50, "press", "BD"), (150, "turn", ("0:-20", 2, 20)), (250, "turn", ("1:+20", 2, 20))],
                snap=s6, start=t, save=True)
@@ -581,6 +593,19 @@ def t_scnguard(e):
     fx = [x for x in l2 if x[1] == 12 and x not in l0]
     U.check("scnguard: SD held on DELAY (TIME) - a stock scene lock on FX index 9; on SEND FX 1, P1 and P2 - none on FX "
             "38..41", [x for x in fx if x[2] == 9] and not [x for x in fx if 38 <= x[2] <= 41], f"new {fx}")
+    # um-pages: U1 on BD, SRC page 2 (P17..P24), scene mode, SD held + knob C (P19): no scene lock; then AMPLITUDE's ATK
+    go, tu = um_go()
+    ev = go + [(tu + 150, "press", "SRC:300M"), (tu + 250, "press", "DOWN")] + \
+        [(tu + at, k, v) for at, k, v in SCN_ON] + [(tu + 650, "press", "SD:400M"), (tu + 750, "turn", (f"{U.UI['knob_enc']['C']}:+12", 2, 20))]
+    su = e.run("scng-um", tu + 1200, ev, save=True)
+    lu = [x for x in scene_list(e, su) if x not in l0]
+    pg = um_state(e, su)["pg"]
+    su2 = e.run("scng-um-atk", 800, [(50, "press", "AMP"), (200, "press", "SD:400M"), (300, "turn", ("0:+12", 2, 20))],
+                snap=su, start=e.clock + tu + 1200, save=True)
+    lu2 = [x for x in scene_list(e, su2) if x not in l0]
+    U.check("scnguard: U1 on BD, SRC page 2 shown, SD held + P19 turned - no scene lock; then ATK on AMPLITUDE - a stock "
+            "scene lock (index 33)", pg == 1 and not lu and [x for x in lu2 if x[1] == 0 and x[2] == 33],
+            f"page {pg} after P19 {lu} after ATK {lu2}")
     s3, _ = X.poke_boot(e, "scng-boot", {}, snap=s2, start=e.clock + 2200)
     l3 = scene_list(e, s3)
     hi = lambda L: sorted((v >> 8, t, k, n) for v, t, k, n in L)   # (stored: the value's hi byte only)
