@@ -1162,7 +1162,16 @@ int32_t sfu_draw(void *functor, int32_t value, int32_t x, int32_t y, int32_t h, 
 #define K_FUNC 0x80
 #define STOCK_KEY ((int32_t (*)(void *, void *))0x400a02cau)   /* stock's key handler (0026's STOCK_KEY) */
 #define VT_SAMPLELED 0x40234cfcu                               /* SamplerLedView: stacked after the page (0026) */
-static const uint32_t padviews[4] = {0x401e290cu, 0x401e10e4u, 0x401e2dacu, 0x401e2414u};   /* the pad modes' (0026) */
+/* the pad modes' (0026), then SceneEditView (scene-edit: SCNE, FUNC + a pad; it stays after both are let go): it draws only
+   its SCENE / LOCKS bar over the page's bottom row, the page's knobs stay the page's, so it covers nothing here - SRC /
+   SMPL held + UP / DOWN pages as on the plain page, UP / DOWN alone stay its scene step (not taken: no key held) */
+#define NPADV 5
+static const uint32_t padviews[NPADV] = {0x401e290cu, 0x401e10e4u, 0x401e2dacu, 0x401e2414u, 0x401e2c38u};
+static int32_t __attribute__((noinline)) padview(uint32_t vt) {
+  int32_t j;
+  for (j = 0; j < NPADV; ++j) if (padviews[j] == vt) return 1;
+  return 0;
+}
 typedef const char *(*title_fn)(void *view);
 typedef void (*sfc_fn)(void *s, const char *c, void *alloc);
 typedef void (*uit_fn)(void *ui, void *s);
@@ -1178,14 +1187,13 @@ typedef void (*sdt_fn)(void *s);
    SamplerLedView on SEND FX 1; another FxPageView object on REVERB; one GlobalMenu-class view alone in GLOBAL] */
 static int32_t listed(const uint8_t *c, void *view, uint32_t vt) {   /* view is the screen (see top_page) */
   const uint32_t *n = *(const uint32_t *const *)(c + 28);
-  int32_t k, j, led = 0, found = 0;
+  int32_t k, led = 0, found = 0;
   if (!view) return 0;
   for (k = 0; k < 16 && n && (const uint8_t *)n != c + 20; ++k) {
     const uint32_t *v = (const uint32_t *)n[2];
     if (!v) return 0;
     if (led) {
-      for (j = 0; j < 4 && padviews[j] != v[0]; ++j) {}
-      if (j == 4) return 0;
+      if (!padview(v[0])) return 0;
     } else if (v[0] == VT_SAMPLELED) led = 1;
     else if (v == (const uint32_t *)view && v[0] == vt) found = 1;
     n = (const uint32_t *)n[0];
@@ -1236,8 +1244,7 @@ static int32_t fxv_view(void *ctrl) {
     const uint32_t *v = (const uint32_t *)n[2];
     if (!v) return 0;
     if (led) {
-      for (j = 0; j < 4 && padviews[j] != v[0]; ++j) {}
-      if (j == 4) cov = 1;
+      if (!padview(v[0])) cov = 1;
     } else if (v[0] == VT_SAMPLELED) led = 1;
     else if (fx < 0 && ((const uint32_t *)v[0])[0x9c / 4] == PV_KNOBREC) {
       j = KNOB_REC((void *)v, v[0], 0);

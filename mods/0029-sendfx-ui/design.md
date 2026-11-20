@@ -861,3 +861,22 @@ record's container word (BD index 11) [measured on ag1]. Cost +16 B.
 the row holds step 5's `1824`; SFX2's base turned: `1830`, SFX1's lock kept; then the next trigs play the new kit halves,
 the existing check), `scnguard` 4 checks (new: U1 on BD, SRC page 2, SD held + P19: no record; ATK after it: index 33).
 On ag1 exactly the two new checks fail. Suites: see the commit message. RAM: ag1 496 B spare, ag2 396 B.
+
+## 20. scene-edit (2026-11-21): SRC / SMPL held + UP / DOWN pages in scene edit
+
+Hardware report (the user-machine set, sfpm3's line): in scene edit SRC + UP / DOWN did not reach a send FX's SEND FX page 2/3
+(nor a U slot's SRC / SMPL page 2); stock's UP / DOWN scene step ran instead. Tags as above; rytm-emu 1.74, DTEMU_STRICT=1.
+
+- **Scene edit** is SceneEditView (1.73 0x401e2c38, 1.74 0x401e2ee8, its typeinfo "13SceneEditView"): SCNE, then FUNC held
+  + a pad (SceneView's key handler 1.74 0x400d1798 builds it, constructor 0x400d07c0); it stays on top of the view list,
+  after SamplerLedView, once the pad and FUNC are let go [code; measured]. It draws its bar (SCENE n with its arrows, LOCKS
+  n) over the page's bottom row; the page's knobs stay the page's; UP / DOWN step the edited scene [measured].
+- **Cause** [code; measured on sfpm3 and ag1, the same]: `listed` (behind `PG.ontop` / `PG.mtop`, so the page keys) and
+  `fxv_view` (sendfx-draw) take any view after SamplerLedView that is not a pad mode's for a cover. In scene edit the page
+  was "covered": SRC held + DOWN was not ours, and stock stepped the scene.
+- **Fix:** SceneEditView joins the pad modes' views (`padviews`, now one `padview(vt)` for both walks). Priority: SRC /
+  SMPL held + UP / DOWN = 0029's page step (and 0021's U slot page) also in scene edit; UP / DOWN alone stay stock's scene
+  step (key_body takes an arrow only with SRC / SMPL held, as on the plain page). The scene guard (section 18, with
+  section 19's paged-knob refusal, which now also meets SRC / SMPL page 2 reached in scene edit) and the scene pads are
+  untouched. 0029 +18 B of code, no state.
+- **Test** `sfu_emu.py TAG scnedit` (with 0026's half, its design.md "scene-edit"): see there.
